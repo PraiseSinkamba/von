@@ -24,6 +24,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # PyPI Trusted Publishing: GitHub mints a short-lived OIDC token per run and
+      # PyPI exchanges it for a scoped, minutes-long upload token. No long-lived
+      # API token is stored anywhere, so there is nothing to leak or rotate.
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -88,17 +92,31 @@ jobs:
           print('smoke ok')
           "
 
-      - name: Publish
-        if: startsWith(github.ref, 'refs/tags/v') || inputs.dry_run == false
-        env:
-          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+      - name: Verify trusted publishing is configured
+        if: inputs.dry_run == true
+        # A dry run cannot upload, so it verifies the next best thing: that PyPI
+        # will actually exchange this workflow's OIDC identity for an upload
+        # token. Without this, a misconfigured publisher only surfaces during a
+        # real tagged release, when it is most expensive to discover.
         run: |
           set -euo pipefail
-          if [ -z "${UV_PUBLISH_TOKEN}" ]; then
-            echo "::error::PYPI_API_TOKEN secret is not set."
+          OIDC=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=pypi" | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
+          CODE=$(curl -sS -o /tmp/mint.json -w '%{http_code}' \
+            -X POST https://pypi.org/_/oidc/mint-token \
+            -d "{\"token\": \"$OIDC\"}")
+          if [ "$CODE" != "200" ]; then
+            echo "::error::PyPI refused to mint an upload token (HTTP $CODE). Check the trusted publisher on pypi.org: owner wfzyx, repo von, workflow publish-pypi.yml."
+            python3 -c 'import json; print(json.load(open("/tmp/mint.json")))' || cat /tmp/mint.json
             exit 1
           fi
-          uv publish dist/*
+          rm -f /tmp/mint.json
+          echo "trusted publishing OK: PyPI minted a scoped upload token"
+
+      - name: Publish
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.dry_run == false
+        # No token: uv reads the GitHub OIDC identity and exchanges it with PyPI.
+        run: uv publish --trusted-publishing always dist/*
 
       - name: Summary
         if: always()

@@ -38,7 +38,7 @@ jobs:
               raise RuntimeError("Missing HF_TOKEN secret!")
 
           api = HfApi(token=token)
-          repo_id = "wfzyx/von-1.0"
+          repo_id = "wfzyx/von"
 
           # Upload updated model card
           card_path = "checkpoints/von-modernbert-rlcd/README.md" if os.path.exists("checkpoints/von-modernbert-rlcd/README.md") else "README.md"

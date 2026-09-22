@@ -12,7 +12,7 @@ from benchmarks.jabr_cases import ALL_TASK_FUNCTIONS
 def main():
     print("=" * 60)
     print("Running Peer Benchmark (jabr/classifier-benchmark)")
-    print("Model: wfzyx/von-1.0 (local)")
+    print("Model: wfzyx/von (local)")
     print("=" * 60)
 
     t0_suite = time.perf_counter()

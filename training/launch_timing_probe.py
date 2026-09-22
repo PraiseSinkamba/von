@@ -71,7 +71,7 @@ echo "=== Running {steps}-step timing probe (long_ratio={long_ratio}) ==="
 /opt/von/.venv/bin/python -m training.train_option_marker \\
     --train_data data_probe/train.jsonl \\
     --val_data data_probe/val.jsonl \\
-    --base_model_id wfzyx/von-1.0 \\
+    --base_model_id wfzyx/von \\
     --epochs 3 \\
     --batch_size 8 \\
     --grad_accum_steps 2 \\

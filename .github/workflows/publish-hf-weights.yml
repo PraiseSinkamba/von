@@ -42,19 +42,19 @@ jobs:
           token = os.environ.get("HF_TOKEN")
           api = HfApi(token=token)
 
-          print("Publishing option_marker.pt (~1.5GB) to wfzyx/von-1.0...")
+          print("Publishing option_marker.pt (~1.5GB) to wfzyx/von...")
           api.upload_file(
               path_or_fileobj="/tmp/release_weights/option_marker.pt",
               path_in_repo="option_marker.pt",
-              repo_id="wfzyx/von-1.0",
+              repo_id="wfzyx/von",
               commit_message="feat(model): release converged Option-Marker Universal weights (98.66% val, 72.0% v2 macro, 9.00 ViZDoom kills)"
           )
 
-          print("Publishing marker_calibration.json to wfzyx/von-1.0...")
+          print("Publishing marker_calibration.json to wfzyx/von...")
           api.upload_file(
               path_or_fileobj="/tmp/release_weights/marker_calibration.json",
               path_in_repo="marker_calibration.json",
-              repo_id="wfzyx/von-1.0",
+              repo_id="wfzyx/von",
               commit_message="feat(model): update marker_calibration.json to converged Epoch 3 checkpoint"
           )
           print("Successfully published converged Option-Marker weights to Hugging Face Hub!")

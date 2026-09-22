@@ -85,7 +85,7 @@ echo "Detected $NUM_GPUS GPUs. Starting PyTorch DDP training with 8,192 Context 
 /opt/von/.venv/bin/torchrun --nproc_per_node=$NUM_GPUS training/train_option_marker.py \\
     --train_data data_universal/train.jsonl \\
     --val_data data_universal/val.jsonl \\
-    --base_model_id wfzyx/von-1.0 \\
+    --base_model_id wfzyx/von \\
     --epochs {epochs} \\
     --batch_size 8 \\
     --grad_accum_steps 2 \\

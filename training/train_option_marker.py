@@ -219,6 +219,7 @@ class LengthBucketedBatchSampler(Sampler):
 def collate_marker_fn(batch: List[dict], tokenizer, max_length: int = 8192):
     packed_texts = []
     labels = []
+    soft_targets: List[Optional[List[float]]] = []
     mask = tokenizer.mask_token
     sep = tokenizer.sep_token
 
@@ -231,6 +232,16 @@ def collate_marker_fn(batch: List[dict], tokenizer, max_length: int = 8192):
         opt_ids = [opt["id"] for opt in opts]
         target_idx = opt_ids.index(target) if target in opt_ids else 0
         labels.append(target_idx)
+
+        # Distilled rows carry a full probability distribution over options.
+        # One-hot training can only ever teach certainty; the soft target is
+        # what the distribution-fidelity half of the Calibration axis scores.
+        soft = item.get("target")
+        if isinstance(soft, list) and len(soft) == len(opts):
+            total_mass = float(sum(soft))
+            soft_targets.append([float(x) / total_mass for x in soft] if total_mass > 0 else None)
+        else:
+            soft_targets.append(None)
 
         prefix = f"{q} {state}".strip() if q else state
         opts_packed = " ".join(f"{mask} {opt['description'].strip()}" for opt in opts)
@@ -254,6 +265,7 @@ def collate_marker_fn(batch: List[dict], tokenizer, max_length: int = 8192):
         "input_ids": encodings["input_ids"],
         "attention_mask": encodings["attention_mask"],
         "labels": torch.tensor(labels, dtype=torch.long),
+        "soft_targets": soft_targets,
         "mask_positions": batch_mask_positions,
     }
 
@@ -262,7 +274,15 @@ def compute_marker_rlcd_loss(
     batch_logits: List[torch.Tensor],
     labels: torch.Tensor,
     brier_weight: float = 0.5,
+    soft_targets: Optional[List[Optional[List[float]]]] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, float]:
+    """Cross-entropy + Brier against the target distribution.
+
+    Both terms accept a full distribution, so a soft target is a strict
+    generalisation of the one-hot case rather than a separate code path.
+    Accuracy is still measured against the argmax, so it stays comparable to
+    runs trained on hard labels.
+    """
     ce_losses = []
     brier_losses = []
     correct = 0
@@ -273,13 +293,17 @@ def compute_marker_rlcd_loss(
         probs = torch.softmax(logits, dim=-1)
 
         safe_target = min(target_idx, probs.size(0) - 1)
-        ce = -torch.log(probs[safe_target] + 1e-8)
-        ce_losses.append(ce)
 
-        one_hot = torch.zeros_like(probs)
-        one_hot[safe_target] = 1.0
-        brier = torch.sum((probs - one_hot) ** 2)
-        brier_losses.append(brier)
+        soft = soft_targets[i] if soft_targets is not None else None
+        if soft is not None and len(soft) == probs.size(0):
+            dist = torch.tensor(soft, dtype=probs.dtype, device=probs.device)
+        else:
+            dist = torch.zeros_like(probs)
+            dist[safe_target] = 1.0
+
+        ce = -torch.sum(dist * torch.log(probs + 1e-8))
+        ce_losses.append(ce)
+        brier_losses.append(torch.sum((probs - dist) ** 2))
 
         if torch.argmax(probs).item() == safe_target:
             correct += 1
@@ -542,7 +566,8 @@ def train(
                     mask_positions=mask_positions,
                 )
                 loss, ce_loss, acc = compute_marker_rlcd_loss(
-                    batch_logits, labels, brier_weight=brier_weight
+                    batch_logits, labels, brier_weight=brier_weight,
+                        soft_targets=batch.get("soft_targets")
                 )
                 accum_loss = loss / grad_accum_steps
 
@@ -600,7 +625,8 @@ def train(
                             mask_positions=mask_positions,
                         )
                         loss, _, acc = compute_marker_rlcd_loss(
-                            batch_logits, labels, brier_weight=brier_weight
+                            batch_logits, labels, brier_weight=brier_weight,
+                        soft_targets=batch.get("soft_targets")
                         )
 
                     val_loss += loss.item()

@@ -13,6 +13,7 @@ decision tasks (Choice, Noul, Score) covering:
 import argparse
 import json
 import os
+import urllib.error
 import random
 from typing import Any, Dict, List, Optional
 from datasets import load_dataset
@@ -848,6 +849,8 @@ def build_universal_corpus(
     seed: int = 42,
     overlap_target: float = 0.32,
     jevbench_per_task: int = 8000,
+    distill_path: str = "",
+    distill_per_stream: int = 200000,
 ):
     from .prepare_long_context_dataset import ensure_dir, write_jsonl
 
@@ -944,10 +947,38 @@ def build_universal_corpus(
             print(f"Added {len(jb_records):,} jev-bench records "
                   f"({len(jb_licences)} licences: {', '.join(sorted(jb_licences))})")
             random.shuffle(all_records)
-        except Exception as exc:
-            # Network-sourced data must never take the whole run down; the
-            # instance is already billing by the time this executes.
-            print(f"WARNING: jev-bench harvest skipped ({type(exc).__name__}: {exc})")
+        except (OSError, urllib.error.URLError) as exc:
+            # A network failure must not take down an instance that is already
+            # billing; a bug in conversion must not be hidden either.
+            print(f"WARNING: jev-bench unreachable, continuing without it ({exc})")
+
+    # Distilled typed decisions with full probability distributions. These are
+    # the only rows in the corpus that teach uncertainty rather than certainty,
+    # and they do not reward the overlap shortcut (measured 18.9% rewards vs
+    # 25.8% punishes, against 48.9%/15.1% for the synthetic universal data).
+    if distill_path and os.path.exists(distill_path):
+        try:
+            from .prepare_distill_dataset import DEFAULT_STREAMS, harvest as distill_harvest
+
+            d_records, d_counts, _ = distill_harvest(
+                distill_path, list(DEFAULT_STREAMS), distill_per_stream, True
+            )
+            all_records.extend(d_records)
+            if not d_records:
+                raise RuntimeError(
+                    f"distill corpus at {distill_path} yielded zero usable records; "
+                    f"refusing to train on a corpus silently missing its soft targets"
+                )
+            print(f"Added {len(d_records):,} distilled records "
+                  f"({', '.join(f'{k}={v:,}' for k, v in d_counts.most_common())})")
+            random.shuffle(all_records)
+        except OSError as exc:
+            # Only an unreadable file is tolerable; a conversion bug must not be
+            # downgraded to a warning, or an instance trains on a corpus that
+            # silently lost the data it was launched to use.
+            print(f"WARNING: distill corpus unreadable, continuing without it ({exc})")
+    elif distill_path:
+        print(f"WARNING: distill corpus not found at {distill_path}; continuing without it")
 
     # Break the lexical-overlap shortcut before splitting. Measured on this
     # corpus, the correct option is the highest-overlap option ~80% of the time,
@@ -987,6 +1018,9 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str, default="data_universal")
     parser.add_argument("--max_train", type=int, default=200000)
     parser.add_argument("--val_samples", type=int, default=5000)
+    parser.add_argument("--distill_path", type=str, default="",
+                        help="path to a downloaded jev-distill-corpus train.jsonl (soft targets)")
+    parser.add_argument("--distill_per_stream", type=int, default=200000)
     parser.add_argument("--jevbench_per_task", type=int, default=8000,
                         help="max rows per public jev-bench task (0 disables)")
     parser.add_argument("--overlap_target", type=float, default=0.32,
@@ -1004,4 +1038,6 @@ if __name__ == "__main__":
         long_context=args.long_context,
         overlap_target=args.overlap_target,
         jevbench_per_task=args.jevbench_per_task,
+        distill_path=args.distill_path,
+        distill_per_stream=args.distill_per_stream,
     )

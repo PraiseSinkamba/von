@@ -6,13 +6,11 @@ inputs -- they are comparison baselines, not supported backends.
 """
 
 import os
-import warnings
 import threading
 from typing import Any, Dict, List, Optional, Union
 
 from .backends import (
     BaseBackend,
-    BertaBackend,
 )
 from .types import (
     Choice,
@@ -36,15 +34,10 @@ VON_VERSION = "1.1"
 VON_CURRENT_ALIASES = ("von-1.1", "1.1", "von", "default", "latest", "von-latest")
 SUPPORTED_BACKENDS = frozenset(VON_CURRENT_ALIASES)
 
-# Superseded releases and third-party encoders. These exist only so the
-# benchmark suite can score the current model against them on identical inputs.
-# They are not supported, are not documented as options, and carry no
-# compatibility guarantee.
-BENCHMARK_BACKENDS = frozenset((
-    "von-1.0", "1.0",
-    "laya", "laya-421m", "convaiinnovations/laya",
-    "berta", "berta-v3", "deberta", "deberta-v3",
-))
+# Von ships exactly one model. Superseded releases and third-party encoders used
+# to be selectable here as benchmark baselines; they were removed because a name
+# that loads is a name someone ships to production. Historical comparisons live
+# in the benchmark results, not in the runtime.
 
 
 class VonEngine:
@@ -59,33 +52,10 @@ class VonEngine:
         if self.backend_name in VON_CURRENT_ALIASES:
             from .backends.option_marker_backend import OptionMarkerBackend
             self.backend: BaseBackend = OptionMarkerBackend(device=self.device)
-        elif self.backend_name in BENCHMARK_BACKENDS:
-            # Third-party comparison baselines. These exist so the benchmark
-            # suite can score Von against them on identical inputs; they are not
-            # supported backends and carry no compatibility guarantee.
-            warnings.warn(
-                f"Backend '{self.backend_name}' is a superseded or third-party baseline kept "
-                f"for benchmarking only. Von {VON_VERSION} is the supported model.",
-                UserWarning,
-                stacklevel=2,
-            )
-            try:
-                if self.backend_name in ("laya", "laya-421m", "convaiinnovations/laya"):
-                    from .local_backends.laya_backend import LayaBackend
-                    self.backend = LayaBackend(device=self.device)
-                elif self.backend_name in ("von-1.0", "1.0"):
-                    self.backend = BertaBackend(variant="von-1.0", device=self.device)
-                else:
-                    self.backend = BertaBackend(variant="deberta-v3", device=self.device)
-            except (ImportError, ModuleNotFoundError) as e:
-                raise ValueError(
-                    f"Benchmark baseline '{self.backend_name}' is not installed. "
-                    f"Baselines ship only with the development checkout, not the public release."
-                ) from e
         else:
             raise ValueError(
                 f"Unknown model '{self.backend_name}'. "
-                f"Von {VON_VERSION} is the current model; accepted aliases: "
+                f"Von {VON_VERSION} is the only model; accepted aliases: "
                 f"{', '.join(sorted(VON_CURRENT_ALIASES))}."
             )
 

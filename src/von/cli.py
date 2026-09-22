@@ -11,7 +11,7 @@ from .api import decide as api_decide
 from .api import judge as api_judge
 from .api import rate as api_rate
 from .api import system_one as api_system_one
-from .backends.berta_backend import _detect_device, get_device_description
+from .device import _detect_device, get_device_description
 
 
 @click.group()

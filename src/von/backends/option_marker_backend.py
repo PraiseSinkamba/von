@@ -7,6 +7,7 @@ Executes single-pass non-autoregressive decision evaluation:
 """
 
 import json
+import math
 import os
 import threading
 from typing import Any, Dict, List, Optional, Union
@@ -43,6 +44,32 @@ def _format_state(state: Any) -> str:
 VON_MODEL_ID = "von-1.1.0"
 
 
+
+def _validate_calibration_map(raw: object) -> Optional[Dict[str, float]]:
+    """Coerce a calibration map to floats once, at load time.
+
+    A malformed map shipped inside a weights file must not be able to raise on
+    every inference call, so it is validated here and dropped wholesale if it is
+    unusable. Dropping it falls back to the scalar temperature, which is always
+    safe.
+    """
+    if not isinstance(raw, dict):
+        return None
+    out: Dict[str, float] = {}
+    for key, value in raw.items():
+        try:
+            out[str(key)] = float(value)
+        except (TypeError, ValueError):
+            return None
+    if not any(k in out for k in ("bias", "entropy", "log_tokens", "n_options")):
+        return None
+    out.setdefault("lo", 0.5)
+    out.setdefault("hi", 12.0)
+    if out["lo"] > out["hi"]:
+        return None
+    return out
+
+
 class OptionMarkerBackend(BaseBackend):
     """Native System One decision backend powered by Option-Marker joint attention."""
 
@@ -73,7 +100,53 @@ class OptionMarkerBackend(BaseBackend):
         )
         self._model = None
         self._default_temp = 1.0
+        self._calib_map: Optional[dict] = None
         self._lock = threading.Lock()
+
+    def _effective_temperature(
+        self,
+        logits: "torch.Tensor",
+        state_text: str,
+        n_options: int,
+        tokenizer,
+        override: Optional[float] = None,
+    ) -> float:
+        """Resolve the softmax temperature for one request.
+
+        Confidence has to track difficulty, and difficulty is not constant: an
+        easy routing question the model answers 94% of the time should stay
+        sharp, while a long multi-clause policy question it answers near chance
+        must report near-chance confidence. A single global temperature cannot
+        do both, so when a fitted map is present the temperature is a bounded
+        linear function of the request's own features.
+
+        Temperature is monotonic, so this never moves the argmax: it changes how
+        sure Von claims to be, never what Von answers.
+        """
+        if override is not None:
+            return override
+        params = self._calib_map
+        if not params:
+            return self._default_temp
+
+        probs = torch.softmax(logits.float(), dim=-1)
+        n = max(probs.numel(), 1)
+        if n > 1:
+            ent = -(probs * torch.log(probs.clamp_min(1e-12))).sum().item() / math.log(n)
+        else:
+            ent = 0.0
+
+        # Must match the feature used when fitting the map (benchmarks/fit_calibration.py):
+        # real tokenizer count on the state text, not a character proxy.
+        tokens = max(len(tokenizer.encode(state_text, add_special_tokens=False)), 1)
+        feats = {
+            "bias": 1.0,
+            "entropy": ent,
+            "log_tokens": math.log10(tokens) / 4.0,
+            "n_options": n_options / 8.0,
+        }
+        raw = sum(params.get(k, 0.0) * v for k, v in feats.items())
+        return min(params["hi"], max(params["lo"], raw))
 
     def _get_model(self) -> OptionMarkerModel:
         with self._lock:
@@ -120,12 +193,18 @@ class OptionMarkerBackend(BaseBackend):
                         with open(calib_path, "r", encoding="utf-8") as f:
                             cdata = json.load(f)
                             self._default_temp = float(cdata.get("temperature", 1.0))
+                            self._calib_map = _validate_calibration_map(cdata.get("calibration_map"))
                     except Exception:
                         self._default_temp = 1.0
+                        self._calib_map = None
                 else:
                     self._default_temp = 1.0
+                    self._calib_map = None
 
-                if self._default_temp != 1.0:
+                if self._calib_map:
+                    print(f"[von] Loaded {VON_MODEL_ID} weights from {loaded_from} "
+                          f"(input-conditioned calibration map active)")
+                elif self._default_temp != 1.0:
                     print(f"[von] Loaded {VON_MODEL_ID} weights from {loaded_from} (temperature {self._default_temp})")
                 else:
                     print(f"[von] Loaded {VON_MODEL_ID} weights from {loaded_from} (uncalibrated, T=1.0)")
@@ -147,7 +226,6 @@ class OptionMarkerBackend(BaseBackend):
 
         model = self._get_model()
         tok = model.tokenizer
-        eff_temp = self._default_temp if temperature is None else temperature
 
         descriptions = []
         for opt in options:
@@ -167,10 +245,13 @@ class OptionMarkerBackend(BaseBackend):
                 mask_positions=[pos_list],
             )
             logits = batch_logits[0]  # (K,)
+            eff_temp = self._effective_temperature(
+                logits, state_text, len(options), tok, temperature
+            )
             scaled = logits / max(eff_temp, 1e-4)
             probs = torch.softmax(scaled, dim=-1).cpu().tolist()
 
-        best_idx = int(torch.argmax(logits).item())
+        best_idx = torch.argmax(logits).item()
         best_choice = options[best_idx]
         prob_dict = {opt: round(p, 4) for opt, p in zip(options, probs)}
 
@@ -189,7 +270,6 @@ class OptionMarkerBackend(BaseBackend):
     ) -> NoulAnswer:
         model = self._get_model()
         tok = model.tokenizer
-        eff_temp = self._default_temp if temperature is None else temperature
 
         crit = q.criteria or {}
         pos_desc = crit.get("true")
@@ -230,6 +310,9 @@ class OptionMarkerBackend(BaseBackend):
                 bias = null_logits[0] - null_logits[1]
                 logits = torch.stack([logits[0] - 0.7 * bias, logits[1]])
 
+            eff_temp = self._effective_temperature(
+                logits, state_text, 2, tok, temperature
+            )
             scaled = logits / max(eff_temp, 1e-4)
             probs = torch.softmax(scaled, dim=-1).cpu().tolist()
 
@@ -250,7 +333,6 @@ class OptionMarkerBackend(BaseBackend):
 
         model = self._get_model()
         tok = model.tokenizer
-        eff_temp = self._default_temp if temperature is None else temperature
 
         legend: Dict[str, str] = {}
         descriptions = []
@@ -281,6 +363,9 @@ class OptionMarkerBackend(BaseBackend):
                 mask_positions=[pos_list],
             )
             logits = batch_logits[0]
+            eff_temp = self._effective_temperature(
+                logits, state_text, len(descriptions), tok, temperature
+            )
             scaled = logits / max(eff_temp, 1e-4)
             probs = torch.softmax(scaled, dim=-1).cpu().tolist()
 
@@ -322,13 +407,13 @@ class OptionMarkerBackend(BaseBackend):
                 q_obj = q_data
 
             if isinstance(q_obj, Choice):
-                answers[q_id] = self.evaluate_choice(q_id, state_str, q_obj, temperature=self._default_temp)
+                answers[q_id] = self.evaluate_choice(q_id, state_str, q_obj)
                 total_q_chars += len(q_obj.instructions or "")
             elif isinstance(q_obj, Noul):
-                answers[q_id] = self.evaluate_noul(q_id, state_str, q_obj, temperature=self._default_temp)
+                answers[q_id] = self.evaluate_noul(q_id, state_str, q_obj)
                 total_q_chars += len(q_obj.instructions or "")
             elif isinstance(q_obj, Score):
-                answers[q_id] = self.evaluate_score(q_id, state_str, q_obj, temperature=self._default_temp)
+                answers[q_id] = self.evaluate_score(q_id, state_str, q_obj)
                 total_q_chars += len(q_obj.instructions or "")
 
         resolved_model = model or VON_MODEL_ID

@@ -849,6 +849,8 @@ def build_universal_corpus(
     seed: int = 42,
     overlap_target: float = 0.32,
     jevbench_per_task: int = 8000,
+    synthetic_n: int = 0,
+    synthetic_seed: int = 17,
     distill_path: str = "",
     distill_per_stream: int = 200000,
 ):
@@ -952,6 +954,20 @@ def build_universal_corpus(
             # billing; a bug in conversion must not be hidden either.
             print(f"WARNING: jev-bench unreachable, continuing without it ({exc})")
 
+    # Two-hop scenarios whose posteriors are derived, not estimated. Unlike a
+    # distilled label, the target here is correct by construction, and nothing
+    # in it is traceable to another model's judgement.
+    if synthetic_n > 0:
+        from .generate_synthetic_decisions import generate as synth_generate
+
+        s_records = synth_generate(synthetic_n, synthetic_seed)
+        for record in s_records:
+            record.pop("_single", None)
+        all_records.extend(s_records)
+        print(f"Added {len(s_records):,} synthetic two-hop records "
+              f"(derived posteriors, no external labels)")
+        random.shuffle(all_records)
+
     # Distilled typed decisions with full probability distributions. These are
     # the only rows in the corpus that teach uncertainty rather than certainty,
     # and they do not reward the overlap shortcut (measured 18.9% rewards vs
@@ -1018,6 +1034,9 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str, default="data_universal")
     parser.add_argument("--max_train", type=int, default=200000)
     parser.add_argument("--val_samples", type=int, default=5000)
+    parser.add_argument("--synthetic_n", type=int, default=0,
+                        help="two-hop synthetic records with derived posteriors")
+    parser.add_argument("--synthetic_seed", type=int, default=17)
     parser.add_argument("--distill_path", type=str, default="",
                         help="path to a downloaded jev-distill-corpus train.jsonl (soft targets)")
     parser.add_argument("--distill_per_stream", type=int, default=200000)
@@ -1038,6 +1057,8 @@ if __name__ == "__main__":
         long_context=args.long_context,
         overlap_target=args.overlap_target,
         jevbench_per_task=args.jevbench_per_task,
+        synthetic_n=args.synthetic_n,
+        synthetic_seed=args.synthetic_seed,
         distill_path=args.distill_path,
         distill_per_stream=args.distill_per_stream,
     )

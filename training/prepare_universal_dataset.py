@@ -844,6 +844,7 @@ def build_universal_corpus(
     output_dir: str = "data_universal",
     max_train: int = 200000,
     val_samples: int = 5000,
+    long_context: int = 40000,
     seed: int = 42,
 ):
     random.seed(seed)
@@ -910,6 +911,18 @@ def build_universal_corpus(
     print("Loading Adversarial Reasoning Core (ANLI + WANLI)...")
     all_records.extend(prepare_adversarial_core(50000))
 
+    # 7. Long-Context Core (real contracts + synthetic multi-clause policies)
+    if long_context > 0:
+        print("Loading Long-Context Core (legalbench + synthetic policies)...")
+        from .prepare_long_context_dataset import build_long_context_corpus
+
+        long_records = build_long_context_corpus(
+            n_synthetic=long_context,
+            seed=seed,
+            verbose=True,
+        )
+        all_records.extend(long_records)
+
     random.shuffle(all_records)
     print(f"\nTotal collected Universal records: {len(all_records):,}")
 
@@ -939,10 +952,14 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str, default="data_universal")
     parser.add_argument("--max_train", type=int, default=200000)
     parser.add_argument("--val_samples", type=int, default=5000)
+    parser.add_argument("--long_context", type=int, default=40000,
+                        help="Synthetic long-document policies to mix in (0 disables the "
+                             "long-context core entirely).")
     args = parser.parse_args()
 
     build_universal_corpus(
         output_dir=args.output_dir,
         max_train=args.max_train,
         val_samples=args.val_samples,
+        long_context=args.long_context,
     )

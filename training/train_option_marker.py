@@ -10,12 +10,13 @@ import argparse
 import json
 import math
 import os
+import random
 import time
 from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Sampler
 from torch.utils.data.distributed import DistributedSampler
 from transformers import AutoTokenizer, get_cosine_schedule_with_warmup
 
@@ -36,6 +37,139 @@ class OptionMarkerDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict:
         return self.rows[idx]
+
+
+def estimate_packed_tokens(item: dict) -> int:
+    """Cheap character-based estimate of an item's packed sequence length.
+
+    Tokenizing a 290k-row corpus just to bucket it costs more than the training
+    step it feeds, so approximate at ~3.6 chars/token. Only the relative ordering
+    and the long/short split matter here, not exactness.
+    """
+    n = len(item.get("state", "")) + len(item.get("question", ""))
+    for opt in item.get("options", []):
+        n += len(opt.get("description", "")) + 8  # +8 for the mask/sep scaffolding
+    return max(8, int(n / 3.6))
+
+
+class LengthBucketedBatchSampler(Sampler):
+    """Batches by length so long-context examples actually reach the model.
+
+    Two problems are solved together:
+
+    1. *Exposure.* Long examples are a small minority of the corpus, so uniform
+       shuffling means the model almost never sees a full-length window. Long
+       examples are oversampled until they account for `long_ratio` of batches.
+
+    2. *Memory.* The collator pads to the longest item in the batch, so a single
+       3k-token document in a batch of 8 inflates that batch to ~24k tokens and
+       OOMs a 16GB card. Batches are therefore built against a token budget:
+       long batches automatically get fewer rows.
+
+    DDP safety: every rank derives the identical global batch list from
+    (seed, epoch), then takes a strided shard truncated to a common length. Ranks
+    that disagree on batch count deadlock at the gradient all-reduce, so the
+    truncation is load-bearing, not tidiness.
+    """
+
+    def __init__(
+        self,
+        lengths: List[int],
+        batch_size: int,
+        max_tokens: int = 8192,
+        long_threshold: int = 2048,
+        long_ratio: float = 0.30,
+        num_replicas: int = 1,
+        rank: int = 0,
+        seed: int = 42,
+        drop_last: bool = True,
+    ):
+        self.lengths = lengths
+        self.batch_size = batch_size
+        self.max_tokens = max_tokens
+        self.long_threshold = long_threshold
+        self.long_ratio = long_ratio
+        self.num_replicas = max(1, num_replicas)
+        self.rank = rank
+        self.seed = seed
+        self.drop_last = drop_last
+        self.epoch = 0
+
+        self.long_idx = [i for i, L in enumerate(lengths) if L >= long_threshold]
+        self.short_idx = [i for i, L in enumerate(lengths) if L < long_threshold]
+        self._cached_len = len(self._build_batches())
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+    def _pack(self, indices: List[int]) -> List[List[int]]:
+        """Group pre-sorted indices into batches respecting the token budget."""
+        batches: List[List[int]] = []
+        cur: List[int] = []
+        cur_max = 0
+        for i in indices:
+            cand_max = max(cur_max, self.lengths[i])
+            # Padded cost is (rows * longest row), which is what actually allocates.
+            if cur and ((len(cur) + 1) * cand_max > self.max_tokens or len(cur) >= self.batch_size):
+                batches.append(cur)
+                cur, cur_max = [i], self.lengths[i]
+            else:
+                cur.append(i)
+                cur_max = cand_max
+        if cur and not self.drop_last:
+            batches.append(cur)
+        elif cur and len(cur) == self.batch_size:
+            batches.append(cur)
+        return batches
+
+    def _build_batches(self) -> List[List[int]]:
+        rng = random.Random(self.seed + self.epoch)
+
+        short = list(self.short_idx)
+        rng.shuffle(short)
+        short_batches = self._pack(short)
+
+        long_batches: List[List[int]] = []
+        if self.long_idx:
+            # Target count so long batches are `long_ratio` of the final mix.
+            n_short = len(short_batches)
+            target_long = int(round(n_short * self.long_ratio / max(1e-6, 1 - self.long_ratio)))
+
+            pool: List[int] = []
+            while True:
+                chunk = list(self.long_idx)
+                rng.shuffle(chunk)
+                pool.extend(chunk)
+                # Sort within the pool so similar lengths batch together (less padding).
+                probe = sorted(pool, key=lambda i: self.lengths[i])
+                if len(self._pack(probe)) >= target_long or not target_long:
+                    pool = probe
+                    break
+            long_batches = self._pack(pool)[:target_long] if target_long else []
+
+        if not long_batches:
+            batches = short_batches
+            rng.shuffle(batches)
+        else:
+            # Interleave evenly rather than shuffling, so long batches are spread
+            # across the epoch instead of clumping into a late memory spike.
+            batches = list(short_batches)
+            stride = max(1, len(batches) // max(1, len(long_batches)))
+            for k, lb in enumerate(long_batches):
+                pos = min(len(batches), k * (stride + 1))
+                batches.insert(pos, lb)
+
+        # Equal batch count per rank: unequal counts deadlock DDP all-reduce.
+        per_rank = len(batches) // self.num_replicas
+        if per_rank == 0:
+            return batches[self.rank:self.rank + 1]
+        return batches[self.rank:per_rank * self.num_replicas:self.num_replicas]
+
+    def __iter__(self):
+        return iter(self._build_batches())
+
+    def __len__(self) -> int:
+        return self._cached_len
 
 
 def collate_marker_fn(batch: List[dict], tokenizer, max_length: int = 8192):
@@ -127,6 +261,10 @@ def train(
     brier_weight: float = 0.5,
     max_position_embeddings: int = 8192,
     max_length: int = 8192,
+    length_bucketing: bool = True,
+    max_tokens_per_batch: int = 8192,
+    long_threshold: int = 2048,
+    long_ratio: float = 0.30,
 ):
     is_ddp = "RANK" in os.environ
     if is_ddp:
@@ -140,6 +278,7 @@ def train(
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         is_main = True
+        rank = 0
         world_size = 1
 
     if is_main:
@@ -155,14 +294,50 @@ def train(
     train_ds = OptionMarkerDataset(train_path)
     val_ds = OptionMarkerDataset(val_path)
 
-    train_sampler = DistributedSampler(train_ds, shuffle=True) if is_ddp else None
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=batch_size,
-        sampler=train_sampler,
-        shuffle=(train_sampler is None),
-        collate_fn=lambda b: collate_marker_fn(b, tokenizer, max_length=max_length),
-    )
+    train_sampler = None
+    batch_sampler = None
+    if length_bucketing:
+        # Bucket by estimated length so long documents are both seen often enough
+        # and batched small enough to fit. Falls back to plain shuffling if the
+        # corpus turns out to have no long examples at all.
+        lengths = [estimate_packed_tokens(r) for r in train_ds.rows]
+        n_long = sum(1 for L in lengths if L >= long_threshold)
+        if n_long == 0:
+            if is_main:
+                print(f"  !! No examples >= {long_threshold} tokens; length bucketing disabled.")
+            length_bucketing = False
+        else:
+            batch_sampler = LengthBucketedBatchSampler(
+                lengths=lengths,
+                batch_size=batch_size,
+                max_tokens=max_tokens_per_batch,
+                long_threshold=long_threshold,
+                long_ratio=long_ratio,
+                num_replicas=world_size,
+                rank=rank,
+                seed=42,
+            )
+            if is_main:
+                print(f"  -> Length bucketing: {n_long:,}/{len(lengths):,} rows >= {long_threshold} tok "
+                      f"({n_long / len(lengths):.1%}); target {long_ratio:.0%} of batches, "
+                      f"budget {max_tokens_per_batch:,} tok/batch")
+
+    if batch_sampler is not None:
+        train_loader = DataLoader(
+            train_ds,
+            batch_sampler=batch_sampler,
+            collate_fn=lambda b: collate_marker_fn(b, tokenizer, max_length=max_length),
+        )
+    else:
+        train_sampler = DistributedSampler(train_ds, shuffle=True) if is_ddp else None
+        train_loader = DataLoader(
+            train_ds,
+            batch_size=batch_size,
+            sampler=train_sampler,
+            shuffle=(train_sampler is None),
+            collate_fn=lambda b: collate_marker_fn(b, tokenizer, max_length=max_length),
+        )
+
     val_loader = DataLoader(
         val_ds,
         batch_size=batch_size,
@@ -196,7 +371,9 @@ def train(
     best_val_acc = 0.0
 
     for epoch in range(1, epochs + 1):
-        if is_ddp:
+        if batch_sampler is not None:
+            batch_sampler.set_epoch(epoch)
+        elif is_ddp and train_sampler is not None:
             train_sampler.set_epoch(epoch)
 
         model.train()
@@ -333,6 +510,15 @@ if __name__ == "__main__":
     parser.add_argument("--max_length", type=int, default=8192,
                         help="Tokenizer truncation length during training. Must match inference-time "
                              "context or the scorer head never learns long-premise aggregation.")
+    parser.add_argument("--no_length_bucketing", action="store_true",
+                        help="Disable length-bucketed batching (uniform shuffling instead).")
+    parser.add_argument("--max_tokens_per_batch", type=int, default=8192,
+                        help="Padded token budget per batch. Long batches get fewer rows so a "
+                             "single long document cannot OOM the card.")
+    parser.add_argument("--long_threshold", type=int, default=2048,
+                        help="Token count at or above which an example counts as long.")
+    parser.add_argument("--long_ratio", type=float, default=0.30,
+                        help="Target fraction of batches drawn from long examples.")
     args = parser.parse_args()
 
     train(
@@ -348,4 +534,8 @@ if __name__ == "__main__":
         brier_weight=args.brier_weight,
         max_position_embeddings=args.max_position_embeddings,
         max_length=args.max_length,
+        length_bucketing=not args.no_length_bucketing,
+        max_tokens_per_batch=args.max_tokens_per_batch,
+        long_threshold=args.long_threshold,
+        long_ratio=args.long_ratio,
     )

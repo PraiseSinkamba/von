@@ -847,6 +847,7 @@ def build_universal_corpus(
     long_context: int = 40000,
     seed: int = 42,
     overlap_target: float = 0.32,
+    jevbench_per_task: int = 8000,
 ):
     from .prepare_long_context_dataset import ensure_dir, write_jsonl
 
@@ -928,6 +929,26 @@ def build_universal_corpus(
 
     random.shuffle(all_records)
 
+    # Public decision corpora that do not reward the lexical-overlap shortcut.
+    # PAWS in particular is built so word overlap carries no signal about the
+    # label (measured mean Jaccard 0.890 vs 0.893 across the two classes), and
+    # StrategyQA supplies the implicit multi-hop composition the hard tier needs.
+    if jevbench_per_task:
+        try:
+            from .prepare_jevbench_dataset import TASKS as JB_TASKS, harvest as jb_harvest
+
+            jb_records, jb_licences = jb_harvest(
+                list(JB_TASKS), jevbench_per_task, "/tmp/jevbench_src"
+            )
+            all_records.extend(jb_records)
+            print(f"Added {len(jb_records):,} jev-bench records "
+                  f"({len(jb_licences)} licences: {', '.join(sorted(jb_licences))})")
+            random.shuffle(all_records)
+        except Exception as exc:
+            # Network-sourced data must never take the whole run down; the
+            # instance is already billing by the time this executes.
+            print(f"WARNING: jev-bench harvest skipped ({type(exc).__name__}: {exc})")
+
     # Break the lexical-overlap shortcut before splitting. Measured on this
     # corpus, the correct option is the highest-overlap option ~80% of the time,
     # which makes "repeat the premise" a near-optimal rule and is why Von scores
@@ -966,6 +987,8 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str, default="data_universal")
     parser.add_argument("--max_train", type=int, default=200000)
     parser.add_argument("--val_samples", type=int, default=5000)
+    parser.add_argument("--jevbench_per_task", type=int, default=8000,
+                        help="max rows per public jev-bench task (0 disables)")
     parser.add_argument("--overlap_target", type=float, default=0.32,
                         help="target share of items where the correct option is the "
                              "highest lexical-overlap option (0 disables rebalancing)")
@@ -980,4 +1003,5 @@ if __name__ == "__main__":
         val_samples=args.val_samples,
         long_context=args.long_context,
         overlap_target=args.overlap_target,
+        jevbench_per_task=args.jevbench_per_task,
     )

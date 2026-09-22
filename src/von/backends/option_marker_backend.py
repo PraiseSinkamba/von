@@ -10,6 +10,7 @@ import json
 import math
 import os
 import threading
+import warnings
 from typing import Any, Dict, List, Optional, Union
 
 import torch
@@ -51,6 +52,9 @@ VON_MODEL_ID = "von-1.1.0"
 
 
 
+TEMP_SANITY_MAX = 50.0
+
+
 def _validate_calibration_map(raw: object) -> Optional[Dict[str, float]]:
     """Coerce a calibration map to floats once, at load time.
 
@@ -73,6 +77,16 @@ def _validate_calibration_map(raw: object) -> Optional[Dict[str, float]]:
     out.setdefault("hi", 12.0)
     if out["lo"] > out["hi"]:
         return None
+    # A checkpoint whose bounds would distort every confidence it reports is a
+    # broken calibration file, not a preference. Clamping it silently hides
+    # that; say so once at load.
+    if out["lo"] <= 0 or out["hi"] > TEMP_SANITY_MAX:
+        warnings.warn(
+            f"calibration map bounds [{out['lo']:g}, {out['hi']:g}] are outside the "
+            f"sane range (0, {TEMP_SANITY_MAX:g}]; confidences may be distorted.",
+            UserWarning,
+            stacklevel=2,
+        )
     return out
 
 

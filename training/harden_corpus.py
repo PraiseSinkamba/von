@@ -103,14 +103,23 @@ def overlap_scores(state: str, options: Sequence) -> List[int]:
 
 
 def gold_is_top(record: dict) -> bool:
+    """True only when the correct option is the *strict* overlap winner.
+
+    Ties must not count. Binary options that differ by a single short word
+    ("... supports the claim" vs "... does not support the claim") tie on token
+    overlap, and counting a tie as a win reports ~100% shortcut rate for data
+    that carries no lexical signal at all. A tie means overlap cannot pick an
+    answer, which is the property we want, not the one we are removing.
+    """
     options = record["options"]
     ids = [option_id(o) for o in options]
     if record["label"] not in ids:
         return False
     scores = overlap_scores(str(record["state"]), options)
-    if max(scores, default=0) == 0:
+    best = max(scores, default=0)
+    if best == 0 or scores.count(best) > 1:
         return False
-    return scores[ids.index(record["label"])] == max(scores)
+    return scores[ids.index(record["label"])] == best
 
 
 def deoverlap(state: str, gold_text: str, rng: random.Random) -> Tuple[str, int]:

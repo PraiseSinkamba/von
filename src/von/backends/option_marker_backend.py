@@ -38,14 +38,33 @@ def _format_state(state: Any) -> str:
     return str(state)
 
 
+# Public release identifier. Von reports version numbers, never architecture
+# names, so callers are not coupled to how the current model is built.
+VON_MODEL_ID = "von-1.1.0"
+
+
 class OptionMarkerBackend(BaseBackend):
     """Native System One decision backend powered by Option-Marker joint attention."""
 
+    # Checked in order; first directory containing option_marker.pt wins. A
+    # default pointing at a directory that does not exist silently degrades to a
+    # Hub download, which is how a stale cache surfaced as a load failure.
+    DEFAULT_CHECKPOINT_DIRS = (
+        "checkpoints/von-option-marker-universal",
+        "checkpoints/von-option-marker",
+    )
+
     def __init__(
         self,
-        checkpoint_dir: str = "checkpoints/von-option-marker",
+        checkpoint_dir: Optional[str] = None,
         device: Optional[str] = None,
     ):
+        if checkpoint_dir is None:
+            checkpoint_dir = next(
+                (d for d in self.DEFAULT_CHECKPOINT_DIRS
+                 if os.path.exists(os.path.join(d, "option_marker.pt"))),
+                self.DEFAULT_CHECKPOINT_DIRS[0],
+            )
         self.checkpoint_dir = checkpoint_dir
         self.device = torch.device(
             device
@@ -107,9 +126,9 @@ class OptionMarkerBackend(BaseBackend):
                     self._default_temp = 1.0
 
                 if self._default_temp != 1.0:
-                    print(f"[von-option-marker] Successfully loaded trained weights from {loaded_from} (temperature {self._default_temp})")
+                    print(f"[von] Loaded {VON_MODEL_ID} weights from {loaded_from} (temperature {self._default_temp})")
                 else:
-                    print(f"[von-option-marker] Successfully loaded trained weights from {loaded_from} (uncalibrated, T=1.0)")
+                    print(f"[von] Loaded {VON_MODEL_ID} weights from {loaded_from} (uncalibrated, T=1.0)")
 
                 self._model = model
             return self._model
@@ -153,7 +172,7 @@ class OptionMarkerBackend(BaseBackend):
 
         best_idx = int(torch.argmax(logits).item())
         best_choice = options[best_idx]
-        prob_dict = {opt: round(float(p), 4) for opt, p in zip(options, probs)}
+        prob_dict = {opt: round(p, 4) for opt, p in zip(options, probs)}
 
         sorted_p = sorted(probs, reverse=True)
         conf = round(max(0.0, min(1.0, sorted_p[0] - (sorted_p[1] if len(sorted_p) > 1 else 0.0))), 3)
@@ -265,7 +284,7 @@ class OptionMarkerBackend(BaseBackend):
             scaled = logits / max(eff_temp, 1e-4)
             probs = torch.softmax(scaled, dim=-1).cpu().tolist()
 
-        prob_dict = {str(i): round(float(p), 4) for i, p in enumerate(probs)}
+        prob_dict = {str(i): round(p, 4) for i, p in enumerate(probs)}
         weighted_score = round(sum(i * p for i, p in enumerate(probs)), 2)
 
         sorted_p = sorted(probs, reverse=True)
@@ -282,7 +301,7 @@ class OptionMarkerBackend(BaseBackend):
         self,
         state: Any,
         questions: Dict[str, Union[Question, Dict[str, Any]]],
-        model: str = "von-option-marker",
+        model: str = VON_MODEL_ID,
     ) -> SystemOneResponse:
         state_str = _format_state(state)
         answers: Dict[str, Union[NoulAnswer, ChoiceAnswer, ScoreAnswer]] = {}
@@ -312,7 +331,7 @@ class OptionMarkerBackend(BaseBackend):
                 answers[q_id] = self.evaluate_score(q_id, state_str, q_obj, temperature=self._default_temp)
                 total_q_chars += len(q_obj.instructions or "")
 
-        resolved_model = "von-option-marker"
+        resolved_model = model or VON_MODEL_ID
         state_tokens = max(1, len(state_str) // 4)
         q_tokens = max(1, total_q_chars // 4)
 

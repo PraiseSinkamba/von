@@ -26,13 +26,22 @@ from .types import (
 )
 
 
-# Von's own backends. These are the only supported, publicly documented options.
-OPTION_MARKER_ALIASES = ("option-marker", "von-marker", "marker", "option_marker")
-VON_1_0_ALIASES = ("von-1.0", "von", "modernbert", "default", "berta-modern", "modernbert-nli")
-SUPPORTED_BACKENDS = frozenset(OPTION_MARKER_ALIASES + VON_1_0_ALIASES)
+# Von ships exactly one model. Releases are identified by version number only --
+# never by architecture name -- so callers never have to know or care how the
+# current model is built. A model that changes enough to break parity gets the
+# next version number.
+VON_VERSION = "1.1"
 
-# Third-party baselines: benchmark-only, unsupported, no compatibility guarantee.
+# Aliases that resolve to the current model.
+VON_CURRENT_ALIASES = ("von-1.1", "1.1", "von", "default", "latest", "von-latest")
+SUPPORTED_BACKENDS = frozenset(VON_CURRENT_ALIASES)
+
+# Superseded releases and third-party encoders. These exist only so the
+# benchmark suite can score the current model against them on identical inputs.
+# They are not supported, are not documented as options, and carry no
+# compatibility guarantee.
 BENCHMARK_BACKENDS = frozenset((
+    "von-1.0", "1.0",
     "laya", "laya-421m", "convaiinnovations/laya",
     "berta", "berta-v3", "deberta", "deberta-v3",
 ))
@@ -44,21 +53,19 @@ class VonEngine:
     _instance: Optional["VonEngine"] = None
     _lock: threading.Lock = threading.Lock()
 
-    def __init__(self, backend_name: str = "von-1.0", device: Optional[str] = None):
+    def __init__(self, backend_name: str = "von-1.1", device: Optional[str] = None):
         self.backend_name = backend_name.lower().strip()
         self.device = device or os.environ.get("VON_DEVICE")
-        if self.backend_name in OPTION_MARKER_ALIASES:
+        if self.backend_name in VON_CURRENT_ALIASES:
             from .backends.option_marker_backend import OptionMarkerBackend
-            self.backend = OptionMarkerBackend(device=self.device)
-        elif self.backend_name in VON_1_0_ALIASES:
-            self.backend: BaseBackend = BertaBackend(variant="von-1.0", device=self.device)
+            self.backend: BaseBackend = OptionMarkerBackend(device=self.device)
         elif self.backend_name in BENCHMARK_BACKENDS:
             # Third-party comparison baselines. These exist so the benchmark
             # suite can score Von against them on identical inputs; they are not
             # supported backends and carry no compatibility guarantee.
             warnings.warn(
-                f"Backend '{self.backend_name}' is a benchmark comparison baseline, "
-                f"not a supported Von backend. Use 'option-marker' or 'von-1.0' in production.",
+                f"Backend '{self.backend_name}' is a superseded or third-party baseline kept "
+                f"for benchmarking only. Von {VON_VERSION} is the supported model.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -66,6 +73,8 @@ class VonEngine:
                 if self.backend_name in ("laya", "laya-421m", "convaiinnovations/laya"):
                     from .local_backends.laya_backend import LayaBackend
                     self.backend = LayaBackend(device=self.device)
+                elif self.backend_name in ("von-1.0", "1.0"):
+                    self.backend = BertaBackend(variant="von-1.0", device=self.device)
                 else:
                     self.backend = BertaBackend(variant="deberta-v3", device=self.device)
             except (ImportError, ModuleNotFoundError) as e:
@@ -75,15 +84,16 @@ class VonEngine:
                 ) from e
         else:
             raise ValueError(
-                f"Unknown backend '{self.backend_name}'. "
-                f"Supported Von backends: {', '.join(sorted(SUPPORTED_BACKENDS))}."
+                f"Unknown model '{self.backend_name}'. "
+                f"Von {VON_VERSION} is the current model; accepted aliases: "
+                f"{', '.join(sorted(VON_CURRENT_ALIASES))}."
             )
 
     @classmethod
     def get_instance(cls, backend: Optional[str] = None, device: Optional[str] = None) -> "VonEngine":
         with cls._lock:
             if cls._instance is None:
-                b = backend or os.environ.get("VON_BACKEND", "von-1.0")
+                b = backend or os.environ.get("VON_BACKEND", f"von-{VON_VERSION}")
                 d = device or os.environ.get("VON_DEVICE")
                 cls._instance = cls(backend_name=b, device=d)
             return cls._instance
@@ -111,7 +121,7 @@ class VonEngine:
         model: Optional[str] = None,
     ) -> SystemOneResponse:
         if model in ("von-latest", "von-preview", "jev-latest", "jev-preview", None):
-            resolved_model = "von-1.0.0"
+            resolved_model = f"von-{VON_VERSION}.0"
         else:
             resolved_model = model
         return self.backend.evaluate(state=state, questions=questions, model=resolved_model)

@@ -13,13 +13,19 @@ from .types import SystemOneResponse
 app = FastAPI(
     title="Von Decision Server",
     description="Drop-in open source System One decision engine in homage to John von Neumann and Ludwig von Mises",
-    version="1.0.0",
+    version="1.1.0",
 )
+
+# Origins are configurable; default to open read access for a drop-in local
+# server. Credentials are only enabled when an explicit origin allowlist is set,
+# since "*" with credentials is both insecure and rejected by browsers anyway.
+_cors_origins = [o.strip() for o in os.environ.get("VON_CORS_ORIGINS", "*").split(",") if o.strip()]
+_cors_wildcard = _cors_origins == ["*"]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=not _cors_wildcard,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -37,8 +43,8 @@ def health_check():
     return {
         "status": "ok",
         "service": "von-decision-server",
-        "version": "1.0.0",
-        "engine": "von-option-marker",
+        "version": "1.1.0",
+        "engine": "von-1.1",
         "homage": "John von Neumann & Ludwig von Mises",
     }
 
@@ -46,10 +52,9 @@ def health_check():
 @app.get("/v1/models")
 def list_models():
     model_entries = [
-        {"name": "von-latest", "description": "Flagship Von System One Decision Model", "release_date": "2026-09-19"},
-        {"name": "von-1.0.0", "description": "Von-1.0 Stable Release", "release_date": "2026-09-19"},
-        {"name": "von-option-marker", "description": "Von Option-Marker Single-Pass Joint Attention Model", "release_date": "2026-09-20"},
-        {"name": "jev-latest", "description": "TypeSafe Jev Compatibility Alias", "release_date": "2026-09-19"},
+        {"name": "von-latest", "description": "Current Von System One decision model", "release_date": "2026-09-21"},
+        {"name": "von-1.1.0", "description": "Von 1.1 stable release", "release_date": "2026-09-21"},
+        {"name": "jev-latest", "description": "TypeSafe Jev compatibility alias", "release_date": "2026-09-21"},
     ]
     data_entries = [
         {"id": m["name"], "object": "model", "owned_by": "von"}

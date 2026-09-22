@@ -16,7 +16,7 @@ def test_von_client_local():
             "is_cancel": noul("Does the user want to cancel?"),
         },
     )
-    assert res.model == "von-1.0.0"
+    assert res.model == "von-1.1.0"
     assert res.answers["action"].choice == "cancel"
     assert res.answers["is_cancel"].noul > 0.5
 

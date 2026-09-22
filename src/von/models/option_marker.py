@@ -76,7 +76,7 @@ class OptionMarkerModel(nn.Module):
         state: str,
         question: str,
         options: List[str],
-    ) -> Tuple[str, str]:
+    ) -> str:
         """Packs state, question, and candidate options into an option-marker string."""
         mask = self.tokenizer.mask_token
         sep = self.tokenizer.sep_token

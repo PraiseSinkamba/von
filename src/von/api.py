@@ -23,10 +23,11 @@ def _get_default_client() -> VonClient:
 
 
 def set_backend(backend: str):
-    """Set the underlying decision backend.
+    """Select the Von model version.
 
-    Supported: 'option-marker' (flagship, single-pass) and 'von-1.0' (cross-encoder).
-    Third-party encoders are benchmark baselines only and are not supported.
+    Von ships a single model, identified by version number ('von-1.1', or the
+    'von'/'latest' aliases). Superseded releases and third-party encoders are
+    reachable for benchmarking only and are not supported.
     """
     from .engine import VonEngine
     VonEngine.set_backend(backend)

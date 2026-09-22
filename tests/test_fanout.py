@@ -25,7 +25,7 @@ def test_speculative_fanout():
     }
 
     resp = von.system_one(state=state, questions=questions)
-    assert resp.model == "von-1.0.0"
+    assert resp.model == "von-1.1.0"
     assert len(resp.answers) == 3
 
     assert resp.answers["category"].choice == "storage"

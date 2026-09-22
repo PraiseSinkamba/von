@@ -23,7 +23,7 @@ def test_list_models(client):
     assert "data" in data
     ids = [m["id"] for m in data["data"]]
     assert "von-latest" in ids
-    assert "von-1.0.0" in ids
+    assert "von-1.1.0" in ids
 
 
 def test_system_one_post(client):
@@ -48,7 +48,7 @@ def test_system_one_post(client):
     res = client.post("/v1/systemone", json=payload)
     assert res.status_code == 200
     data = res.json()
-    assert data["model"] == "von-1.0.0"
+    assert data["model"] == "von-1.1.0"
     assert "error_type" in data["answers"]
     assert data["answers"]["error_type"]["choice"] == "payment_error"
     assert data["answers"]["is_payment"]["noul"] > 0.5

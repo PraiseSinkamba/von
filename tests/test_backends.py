@@ -31,10 +31,3 @@ def test_modernbert_alias():
     assert res.confidence > 0.0
 
 
-def test_local_needle_backend_if_present():
-    if os.path.exists("src/von/local_backends/needle_backend.py"):
-        von.set_backend("needle")
-        res = von.decide("Billing error on checkout invoice", choices=["billing", "technical"])
-        assert res.choice == "billing"
-        assert res.confidence > 0.0
-

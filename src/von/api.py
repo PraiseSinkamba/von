@@ -23,7 +23,11 @@ def _get_default_client() -> VonClient:
 
 
 def set_backend(backend: str):
-    """Set the underlying decision backend ('needle', 'modernbert', 'qwen0.5b')."""
+    """Set the underlying decision backend.
+
+    Supported: 'option-marker' (flagship, single-pass) and 'von-1.0' (cross-encoder).
+    Third-party encoders are benchmark baselines only and are not supported.
+    """
     from .engine import VonEngine
     VonEngine.set_backend(backend)
 
@@ -49,9 +53,9 @@ def decide(
     if isinstance(choices, list):
         if len(choices) != len(set(choices)):
             raise ValueError(f"Duplicate choices found in options list: {choices}")
-        criteria = {c: None for c in choices}
+        criteria: Dict[str, Optional[str]] = {c: None for c in choices}
     else:
-        criteria = choices
+        criteria = dict(choices)
 
     q = Choice(instructions=instructions, criteria=criteria)
     resp = system_one(state=state, questions={"decision": q}, model=model)

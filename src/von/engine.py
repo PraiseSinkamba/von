@@ -1,6 +1,12 @@
-"""Von Engine orchestrator with pluggable backends (Needle 3, Laya 421M, and Berta Encoders)."""
+"""Von Engine orchestrator.
+
+Von supports its own decision backends only. The third-party encoders reachable
+here exist purely so the benchmark suite can score Von against them on identical
+inputs -- they are comparison baselines, not supported backends.
+"""
 
 import os
+import warnings
 import threading
 from typing import Any, Dict, List, Optional, Union
 
@@ -20,6 +26,18 @@ from .types import (
 )
 
 
+# Von's own backends. These are the only supported, publicly documented options.
+OPTION_MARKER_ALIASES = ("option-marker", "von-marker", "marker", "option_marker")
+VON_1_0_ALIASES = ("von-1.0", "von", "modernbert", "default", "berta-modern", "modernbert-nli")
+SUPPORTED_BACKENDS = frozenset(OPTION_MARKER_ALIASES + VON_1_0_ALIASES)
+
+# Third-party baselines: benchmark-only, unsupported, no compatibility guarantee.
+BENCHMARK_BACKENDS = frozenset((
+    "laya", "laya-421m", "convaiinnovations/laya",
+    "berta", "berta-v3", "deberta", "deberta-v3",
+))
+
+
 class VonEngine:
     """System One inference engine orchestrator."""
 
@@ -29,29 +47,37 @@ class VonEngine:
     def __init__(self, backend_name: str = "von-1.0", device: Optional[str] = None):
         self.backend_name = backend_name.lower().strip()
         self.device = device or os.environ.get("VON_DEVICE")
-        if self.backend_name in ("option-marker", "von-marker", "marker", "option_marker"):
+        if self.backend_name in OPTION_MARKER_ALIASES:
             from .backends.option_marker_backend import OptionMarkerBackend
             self.backend = OptionMarkerBackend(device=self.device)
-        elif self.backend_name in ("von-1.0", "von", "modernbert", "default", "berta-modern", "modernbert-nli"):
+        elif self.backend_name in VON_1_0_ALIASES:
             self.backend: BaseBackend = BertaBackend(variant="von-1.0", device=self.device)
-        else:
-            # Check for local benchmark backends if installed
+        elif self.backend_name in BENCHMARK_BACKENDS:
+            # Third-party comparison baselines. These exist so the benchmark
+            # suite can score Von against them on identical inputs; they are not
+            # supported backends and carry no compatibility guarantee.
+            warnings.warn(
+                f"Backend '{self.backend_name}' is a benchmark comparison baseline, "
+                f"not a supported Von backend. Use 'option-marker' or 'von-1.0' in production.",
+                UserWarning,
+                stacklevel=2,
+            )
             try:
-                if self.backend_name in ("needle", "cactus-needle", "needle-json", "needle_json"):
-                    from .local_backends.needle_backend import NeedleBackend
-                    self.backend = NeedleBackend()
-                elif self.backend_name in ("laya", "laya-421m", "convaiinnovations/laya"):
+                if self.backend_name in ("laya", "laya-421m", "convaiinnovations/laya"):
                     from .local_backends.laya_backend import LayaBackend
                     self.backend = LayaBackend(device=self.device)
-                elif self.backend_name in ("berta", "berta-v3", "deberta", "deberta-v3"):
-                    self.backend = BertaBackend(variant="deberta-v3", device=self.device)
                 else:
-                    raise ValueError(f"Unknown backend '{self.backend_name}'.")
+                    self.backend = BertaBackend(variant="deberta-v3", device=self.device)
             except (ImportError, ModuleNotFoundError) as e:
                 raise ValueError(
-                    f"Backend '{self.backend_name}' is not available in public release. "
-                    f"Von runs natively on 'von-1.0'."
+                    f"Benchmark baseline '{self.backend_name}' is not installed. "
+                    f"Baselines ship only with the development checkout, not the public release."
                 ) from e
+        else:
+            raise ValueError(
+                f"Unknown backend '{self.backend_name}'. "
+                f"Supported Von backends: {', '.join(sorted(SUPPORTED_BACKENDS))}."
+            )
 
     @classmethod
     def get_instance(cls, backend: Optional[str] = None, device: Optional[str] = None) -> "VonEngine":
@@ -68,16 +94,6 @@ class VonEngine:
         with cls._lock:
             d = device or os.environ.get("VON_DEVICE")
             cls._instance = cls(backend_name=backend, device=d)
-
-    def embed(self, text: str) -> List[float]:
-        if hasattr(self.backend, "embed"):
-            return getattr(self.backend, "embed")(text)
-        try:
-            from .local_backends.needle_backend import NeedleBackend
-            return NeedleBackend().embed(text)
-        except Exception:
-            # Fallback representation
-            return [0.0] * 768
 
     def evaluate_choice(self, *args, **kwargs) -> ChoiceAnswer:
         return self.backend.evaluate_choice(*args, **kwargs)

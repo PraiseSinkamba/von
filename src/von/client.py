@@ -2,6 +2,8 @@
 
 import os
 from typing import Any, Dict, Optional, Union
+
+from pydantic import BaseModel
 import httpx
 
 from .engine import VonEngine
@@ -41,6 +43,8 @@ class VonClient:
             engine = VonEngine.get_instance()
             return engine.evaluate(state=state, questions=questions, model=model)
 
+        if not self.base_url:
+            raise ValueError("base_url is required for remote mode; pass base_url= or use local=True.")
         url = f"{self.base_url.rstrip('/')}/v1/systemone"
         headers = {
             "Content-Type": "application/json",
@@ -52,7 +56,7 @@ class VonClient:
             "model": model,
             "state": state,
             "questions": {
-                qid: (q.model_dump() if hasattr(q, "model_dump") else q)
+                qid: (q.model_dump() if isinstance(q, BaseModel) else q)
                 for qid, q in questions.items()
             },
         }
@@ -92,6 +96,8 @@ class AsyncVonClient:
             engine = VonEngine.get_instance()
             return engine.evaluate(state=state, questions=questions, model=model)
 
+        if not self.base_url:
+            raise ValueError("base_url is required for remote mode; pass base_url= or use local=True.")
         url = f"{self.base_url.rstrip('/')}/v1/systemone"
         headers = {"Content-Type": "application/json"}
         if self.api_key:
@@ -101,7 +107,7 @@ class AsyncVonClient:
             "model": model,
             "state": state,
             "questions": {
-                qid: (q.model_dump() if hasattr(q, "model_dump") else q)
+                qid: (q.model_dump() if isinstance(q, BaseModel) else q)
                 for qid, q in questions.items()
             },
         }

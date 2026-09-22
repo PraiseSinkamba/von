@@ -1,12 +1,13 @@
 """FastAPI server for Von implementing TypeSafe-compatible HTTP endpoints."""
 
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .engine import VonEngine
+from .types import Question
 from .types import SystemOneResponse
 
 app = FastAPI(
@@ -37,7 +38,7 @@ def health_check():
         "status": "ok",
         "service": "von-decision-server",
         "version": "1.0.0",
-        "engine": "cactus-needle-3",
+        "engine": "von-option-marker",
         "homage": "John von Neumann & Ludwig von Mises",
     }
 
@@ -76,9 +77,10 @@ async def system_one_endpoint(
 
     try:
         engine = VonEngine.get_instance()
+        questions: Dict[str, Union[Question, Dict[str, Any]]] = dict(req.questions)
         response = engine.evaluate(
             state=req.state,
-            questions=req.questions,
+            questions=questions,
             model=req.model,
         )
         return response

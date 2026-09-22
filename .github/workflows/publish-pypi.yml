@@ -55,10 +55,17 @@ jobs:
           # PyPI rejects duplicate versions with an opaque 400; fail early and say why.
           CODE=$(curl -s -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/von-sdk/$PROJECT/json")
           if [ "$CODE" = "200" ]; then
-            echo "::error::von-sdk $PROJECT is already on PyPI. Bump the version; releases are immutable."
-            exit 1
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              # A dry run must still be able to exercise build + smoke-test on an
+              # already-released version, so this is only advisory here.
+              echo "::warning::von-sdk $PROJECT is already on PyPI; a real release would be rejected."
+            else
+              echo "::error::von-sdk $PROJECT is already on PyPI. Bump the version; releases are immutable."
+              exit 1
+            fi
+          else
+            echo "version $PROJECT is free"
           fi
-          echo "version $PROJECT is free"
 
       - name: Build
         run: uv build

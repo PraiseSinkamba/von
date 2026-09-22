@@ -76,7 +76,8 @@ export PYTHONPATH="/opt/von/src:$PYTHONPATH"
 echo "=== Building {max_train}-sample Universal Decision Corpus (long_context={long_context}) ==="
 /opt/von/.venv/bin/python -m training.prepare_universal_dataset \\
     --max_train {max_train} --val_samples 5000 \\
-    --long_context {long_context} --output_dir data_universal
+    --long_context {long_context} --overlap_target {overlap_target} \\
+    --output_dir data_universal
 
 # Detect GPUs and train with DDP
 NUM_GPUS=$(nvidia-smi -L | wc -l)
@@ -118,6 +119,7 @@ def launch(
     max_train: int = 290000,
     long_context: int = 40000,
     long_ratio: float = 0.30,
+    overlap_target: float = 0.32,
 ):
     market_str = "On-Demand (Guaranteed)" if on_demand else "Spot"
     print("================================================================")
@@ -125,6 +127,7 @@ def launch(
     print(f"  Corpus:           {max_train:,} samples (+{long_context:,} long-context)")
     print(f"  Epochs:           {epochs}")
     print(f"  Long batch ratio: {long_ratio:.0%}")
+    print(f"  Overlap target:   {overlap_target:.0%} gold-is-highest-overlap")
     print("  Cluster Target:   4x GPU (g4dn.12xlarge / g5.12xlarge)")
     print("  Region:           us-west-2")
     print(f"  Target S3 Prefix: {s3_target}")
@@ -140,6 +143,7 @@ def launch(
             max_train=max_train,
             long_context=long_context,
             long_ratio=long_ratio,
+            overlap_target=overlap_target,
         ))
 
     instance_id = None
@@ -207,6 +211,8 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--max-train", type=int, default=290000)
     parser.add_argument("--long-context", type=int, default=40000)
+    parser.add_argument("--overlap-target", type=float, default=0.32,
+                        help="target share of items where gold is the highest-overlap option")
     parser.add_argument("--long-ratio", type=float, default=0.30)
     parser.add_argument("--s3-target", type=str, default=S3_TARGET,
                         help="S3 prefix for checkpoints. Defaults to the SHIPPED weights "
@@ -220,4 +226,5 @@ if __name__ == "__main__":
         max_train=args.max_train,
         long_context=args.long_context,
         long_ratio=args.long_ratio,
+        overlap_target=args.overlap_target,
     )

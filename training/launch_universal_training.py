@@ -31,7 +31,7 @@ CANDIDATE_TYPES = [
 IAM_PROFILE = "AmazonSSMRoleForInstancesQuickSetup"
 S3_TARGET = "s3://model-weight/von-option-marker-universal"
 
-USER_DATA_SCRIPT = """#!/bin/bash
+USER_DATA_TEMPLATE = """#!/bin/bash
 set -e
 exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 
@@ -58,9 +58,11 @@ cd /opt/von
 /root/.local/bin/uv pip install --python /opt/von/.venv torch torchvision transformers datasets scipy sentencepiece tiktoken accelerate pydantic awscli
 export PYTHONPATH="/opt/von/src:$PYTHONPATH"
 
-# Build Phase 4 Universal Decision Corpus (290k samples)
-echo "=== Building 290,000-sample Universal Decision Corpus ==="
-/opt/von/.venv/bin/python -m training.prepare_universal_dataset --max_train 290000 --val_samples 5000 --output_dir data_universal
+# Build the Universal Decision Corpus, including the long-context core
+echo "=== Building {max_train}-sample Universal Decision Corpus (long_context={long_context}) ==="
+/opt/von/.venv/bin/python -m training.prepare_universal_dataset \\
+    --max_train {max_train} --val_samples 5000 \\
+    --long_context {long_context} --output_dir data_universal
 
 # Detect GPUs and train with DDP
 NUM_GPUS=$(nvidia-smi -L | wc -l)
@@ -70,14 +72,15 @@ echo "Detected $NUM_GPUS GPUs. Starting PyTorch DDP training with 8,192 Context 
     --train_data data_universal/train.jsonl \\
     --val_data data_universal/val.jsonl \\
     --base_model_id wfzyx/von-1.0 \\
-    --epochs 3 \\
+    --epochs {epochs} \\
     --batch_size 8 \\
     --grad_accum_steps 2 \\
     --max_position_embeddings 8192 \\
-    --s3_target s3://model-weight/von-option-marker-universal \\
-    --output_dir checkpoints/von-option-marker-universal
+    --long_ratio {long_ratio} \\
+    --s3_target {s3_target} \\
+    --output_dir checkpoints/von-long-context
 
-aws s3 cp /var/log/user-data.log s3://model-weight/von-option-marker-universal/run.log || true
+aws s3 cp /var/log/user-data.log {s3_target}/run.log || true
 
 echo "=== [UNIVERSAL TRAINING COMPLETE - TERMINATING] ==="
 shutdown -h now
@@ -94,19 +97,36 @@ def run_aws(cmd: list) -> dict:
     return json.loads(res.stdout)
 
 
-def launch(on_demand: bool = False):
+def launch(
+    on_demand: bool = False,
+    epochs: int = 3,
+    s3_target: str = S3_TARGET,
+    max_train: int = 290000,
+    long_context: int = 40000,
+    long_ratio: float = 0.30,
+):
     market_str = "On-Demand (Guaranteed)" if on_demand else "Spot"
     print("================================================================")
-    print(f"  VON UNIVERSAL (PHASE 4) TRAINING LAUNCHER [{market_str}]")
-    print("  Corpus:           290,000 samples across 49 domains")
+    print(f"  VON TRAINING LAUNCHER [{market_str}]")
+    print(f"  Corpus:           {max_train:,} samples (+{long_context:,} long-context)")
+    print(f"  Epochs:           {epochs}")
+    print(f"  Long batch ratio: {long_ratio:.0%}")
     print("  Cluster Target:   4x GPU (g4dn.12xlarge / g5.12xlarge)")
     print("  Region:           us-west-2")
-    print("  Target S3 Prefix: s3://model-weight/von-option-marker-universal")
+    print(f"  Target S3 Prefix: {s3_target}")
+    if s3_target == S3_TARGET:
+        print("  !! WARNING: writing to the SHIPPED weights prefix.")
     print("================================================================\n")
 
     user_data_path = "/tmp/user_data_universal.sh"
     with open(user_data_path, "w") as f:
-        f.write(USER_DATA_SCRIPT)
+        f.write(USER_DATA_TEMPLATE.format(
+            epochs=epochs,
+            s3_target=s3_target,
+            max_train=max_train,
+            long_context=long_context,
+            long_ratio=long_ratio,
+        ))
 
     instance_id = None
     selected_type = None
@@ -160,15 +180,30 @@ def launch(on_demand: bool = False):
         time.sleep(10)
 
     print(f"\nUniversal Phase 4 {market_str} training instance is RUNNING!")
-    print(f"Artifacts will automatically upload to {S3_TARGET} upon completion.")
+    print(f"Artifacts will automatically upload to {s3_target} upon completion.")
     return instance_id
 
 
 if __name__ == "__main__":
-    import sys
-    on_demand_flag = "--on-demand" in sys.argv
-    launch(on_demand=on_demand_flag)
+    import argparse
 
+    parser = argparse.ArgumentParser(description="Launch Von training on AWS GPUs.")
+    parser.add_argument("--on-demand", action="store_true",
+                        help="Use guaranteed On-Demand capacity instead of Spot.")
+    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--max-train", type=int, default=290000)
+    parser.add_argument("--long-context", type=int, default=40000)
+    parser.add_argument("--long-ratio", type=float, default=0.30)
+    parser.add_argument("--s3-target", type=str, default=S3_TARGET,
+                        help="S3 prefix for checkpoints. Defaults to the SHIPPED weights "
+                             "prefix, so point experiments somewhere else.")
+    args = parser.parse_args()
 
-if __name__ == "__main__":
-    launch()
+    launch(
+        on_demand=args.on_demand,
+        epochs=args.epochs,
+        s3_target=args.s3_target,
+        max_train=args.max_train,
+        long_context=args.long_context,
+        long_ratio=args.long_ratio,
+    )

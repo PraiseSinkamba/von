@@ -846,6 +846,7 @@ def build_universal_corpus(
     val_samples: int = 5000,
     long_context: int = 40000,
     seed: int = 42,
+    overlap_target: float = 0.32,
 ):
     from .prepare_long_context_dataset import ensure_dir, write_jsonl
 
@@ -926,6 +927,20 @@ def build_universal_corpus(
         all_records.extend(long_records)
 
     random.shuffle(all_records)
+
+    # Break the lexical-overlap shortcut before splitting. Measured on this
+    # corpus, the correct option is the highest-overlap option ~80% of the time,
+    # which makes "repeat the premise" a near-optimal rule and is why Von scores
+    # near chance on JevBench's hard tier, where that correlation is broken.
+    # Selection-only: no text is rewritten, so no label can change.
+    if overlap_target and 0 < overlap_target < 1:
+        from .balance_corpus import balance
+
+        all_records, balance_stats = balance(all_records, overlap_target, seed=seed)
+        print(f"Overlap rebalance: gold-is-highest-overlap "
+              f"{balance_stats['gold_top_before']:.1%} -> {balance_stats['gold_top_after']:.1%} "
+              f"(target {overlap_target:.0%}), "
+              f"{balance_stats['before_rows']:,} -> {balance_stats['after_rows']:,} rows")
     print(f"\nTotal collected Universal records: {len(all_records):,}")
 
     val_records = all_records[:val_samples]
@@ -951,6 +966,9 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str, default="data_universal")
     parser.add_argument("--max_train", type=int, default=200000)
     parser.add_argument("--val_samples", type=int, default=5000)
+    parser.add_argument("--overlap_target", type=float, default=0.32,
+                        help="target share of items where the correct option is the "
+                             "highest lexical-overlap option (0 disables rebalancing)")
     parser.add_argument("--long_context", type=int, default=40000,
                         help="Synthetic long-document policies to mix in (0 disables the "
                              "long-context core entirely).")
@@ -961,4 +979,5 @@ if __name__ == "__main__":
         max_train=args.max_train,
         val_samples=args.val_samples,
         long_context=args.long_context,
+        overlap_target=args.overlap_target,
     )

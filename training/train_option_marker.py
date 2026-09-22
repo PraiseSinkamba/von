@@ -76,13 +76,23 @@ def estimate_packed_tokens(item: dict) -> int:
     """Cheap character-based estimate of an item's packed sequence length.
 
     Tokenizing a 290k-row corpus just to bucket it costs more than the training
-    step it feeds, so approximate at ~3.6 chars/token. Only the relative ordering
-    and the long/short split matter here, not exactness.
+    step it feeds, so approximate from character count instead.
+
+    The 4.9 chars/token divisor is calibrated against this corpus measured
+    through the real tokenizer. An earlier 3.6 divisor over-estimated real
+    length by ~1.37x, which silently desynchronised the sampler's long/short
+    split from the true token counts and made the timing profile misreport every
+    long batch as short. Memory headroom is handled explicitly by
+    BATCH_SAFETY_FACTOR rather than by hiding slack in this divisor.
     """
     n = len(item.get("state", "")) + len(item.get("question", ""))
     for opt in item.get("options", []):
         n += len(opt.get("description", "")) + 8  # +8 for the mask/sep scaffolding
-    return max(8, int(n / 3.6))
+    return max(8, int(n / 4.9))
+
+
+# Estimates are approximate, so leave explicit headroom against the token budget.
+BATCH_SAFETY_FACTOR = 1.25
 
 
 class LengthBucketedBatchSampler(Sampler):
@@ -143,7 +153,8 @@ class LengthBucketedBatchSampler(Sampler):
         for i in indices:
             cand_max = max(cur_max, self.lengths[i])
             # Padded cost is (rows * longest row), which is what actually allocates.
-            if cur and ((len(cur) + 1) * cand_max > self.max_tokens or len(cur) >= self.batch_size):
+            projected = (len(cur) + 1) * cand_max * BATCH_SAFETY_FACTOR
+            if cur and (projected > self.max_tokens or len(cur) >= self.batch_size):
                 batches.append(cur)
                 cur, cur_max = [i], self.lengths[i]
             else:
@@ -286,6 +297,8 @@ def _report_step_profile(
     batches_per_epoch: int,
     epochs: int,
     world_size: int,
+    seqlens: Optional[List[Tuple[int, int, float]]] = None,
+    long_threshold: int = 2048,
 ) -> None:
     """Turn a short probe run into a concrete full-run cost estimate."""
     import statistics
@@ -306,6 +319,25 @@ def _report_step_profile(
     if short and long_:
         ratio = statistics.median(long_) / statistics.median(short)
         print(f"  long/short cost ratio: {ratio:.1f}x")
+
+    if seqlens:
+        # Report by REAL tokenized length. A binary long/short flag computed from
+        # estimates once hid every long batch in the short bucket; the buckets
+        # below are measured, so that failure cannot recur silently.
+        print("\n  by real padded sequence length:")
+        bounds = [(0, 512), (512, 1024), (1024, 2048), (2048, 4096), (4096, 1 << 30)]
+        for lo, hi in bounds:
+            sel = [(L, rows, dt) for L, rows, dt in seqlens if lo <= L < hi]
+            if sel:
+                med = statistics.median([dt for _, _, dt in sel])
+                rows_med = statistics.median([rows for _, rows, dt in sel])
+                label = f"{lo}-{hi}" if hi < (1 << 30) else f"{lo}+"
+                print(f"    {label:>10} tok: n={len(sel):4d}  median={med:.3f}s  rows/batch={rows_med:.0f}")
+        cheap = [dt for L, _, dt in seqlens if L < long_threshold]
+        pricey = [dt for L, _, dt in seqlens if L >= long_threshold]
+        if cheap and pricey:
+            print(f"    measured cost ratio (>={long_threshold} vs <): "
+                  f"{statistics.median(pricey) / statistics.median(cheap):.1f}x")
 
     observed = short + long_
     if observed:
@@ -458,6 +490,7 @@ def train(
         epoch_loss = 0.0
         t0 = time.time()
         profile: Dict[str, List[float]] = {"short": [], "long": []}
+        profile_seqlens: List[Tuple[int, int, float]] = []
 
         for step, batch in enumerate(train_loader):
             if device.type == "cuda":
@@ -494,7 +527,9 @@ def train(
 
             if device.type == "cuda":
                 torch.cuda.synchronize()
-            profile["long" if seq_len >= long_threshold else "short"].append(time.time() - step_t0)
+            step_dt = time.time() - step_t0
+            profile["long" if seq_len >= long_threshold else "short"].append(step_dt)
+            profile_seqlens.append((seq_len, batch["input_ids"].shape[0], step_dt))
 
             if is_main and ((step + 1) % 100 == 0 or (step + 1) == len(train_loader)):
                 elapsed = time.time() - t0
@@ -506,7 +541,8 @@ def train(
 
             if max_steps and (step + 1) >= max_steps:
                 if is_main:
-                    _report_step_profile(profile, len(train_loader), epochs, world_size)
+                    _report_step_profile(profile, len(train_loader), epochs, world_size,
+                                         profile_seqlens, long_threshold)
                 return
 
         # Validation

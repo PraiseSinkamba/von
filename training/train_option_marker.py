@@ -24,13 +24,46 @@ from von.models.option_marker import OptionMarkerModel
 
 
 class OptionMarkerDataset(Dataset):
-    def __init__(self, jsonl_path: str):
+    def __init__(self, jsonl_path: str, validate: bool = True):
         self.rows = []
-        with open(jsonl_path, "r", encoding="utf-8") as f:
-            for line in f:
+        try:
+            f = open(jsonl_path, "r", encoding="utf-8")
+        except OSError as exc:
+            raise RuntimeError(f"Cannot read training corpus {jsonl_path!r}: {exc}") from exc
+
+        with f:
+            for lineno, line in enumerate(f, start=1):
                 line = line.strip()
-                if line:
-                    self.rows.append(json.loads(line))
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        f"{jsonl_path}:{lineno}: malformed JSON in corpus ({exc.msg}). "
+                        f"Refusing to train on a partially readable corpus."
+                    ) from exc
+
+                if validate:
+                    # The collator falls back to target index 0 when the label does
+                    # not name an option, which silently trains toward the wrong
+                    # answer instead of failing. Catch it at load time instead.
+                    opts = row.get("options")
+                    if not isinstance(opts, list) or len(opts) < 2:
+                        raise ValueError(
+                            f"{jsonl_path}:{lineno}: record needs at least 2 options, got {opts!r}"
+                        )
+                    opt_ids = [o.get("id") for o in opts]
+                    if row.get("label") not in opt_ids:
+                        raise ValueError(
+                            f"{jsonl_path}:{lineno}: label {row.get('label')!r} matches no option id "
+                            f"{opt_ids!r}. This would silently train toward option 0."
+                        )
+
+                self.rows.append(row)
+
+        if not self.rows:
+            raise ValueError(f"{jsonl_path}: corpus is empty.")
 
     def __len__(self):
         return len(self.rows)
@@ -248,6 +281,47 @@ def compute_marker_rlcd_loss(
     return total_loss, mean_ce, accuracy
 
 
+def _report_step_profile(
+    profile: Dict[str, List[float]],
+    batches_per_epoch: int,
+    epochs: int,
+    world_size: int,
+) -> None:
+    """Turn a short probe run into a concrete full-run cost estimate."""
+    import statistics
+
+    short, long_ = profile["short"], profile["long"]
+    # Drop the first few steps: cuDNN autotuning and allocator warmup make them
+    # unrepresentative of steady state.
+    short, long_ = short[3:] or short, long_[3:] or long_
+
+    print("\n================ STEP TIMING PROFILE ================")
+    for name, xs in (("short", short), ("long", long_)):
+        if xs:
+            print(f"  {name:>5} batches: n={len(xs):4d}  median={statistics.median(xs):.3f}s  "
+                  f"mean={statistics.mean(xs):.3f}s")
+        else:
+            print(f"  {name:>5} batches: none observed")
+
+    if short and long_:
+        ratio = statistics.median(long_) / statistics.median(short)
+        print(f"  long/short cost ratio: {ratio:.1f}x")
+
+    observed = short + long_
+    if observed:
+        frac_long = len(long_) / len(observed)
+        mean_step = statistics.mean(observed)
+        epoch_s = mean_step * batches_per_epoch
+        total_h = epoch_s * epochs / 3600
+        print(f"\n  observed long-batch share: {frac_long:.1%}")
+        print(f"  batches/epoch (per rank):  {batches_per_epoch:,}")
+        print(f"  projected epoch time:      {epoch_s/3600:.2f}h")
+        print(f"  projected {epochs}-epoch run:     {total_h:.2f}h")
+        for rate, label in ((3.912, "g4dn.12xlarge on-demand"), (5.672, "g5.12xlarge on-demand")):
+            print(f"    est. cost @ ${rate}/hr ({label}): ${total_h * rate:.2f}")
+    print("=====================================================\n")
+
+
 def train(
     train_path: str,
     val_path: str,
@@ -265,6 +339,7 @@ def train(
     max_tokens_per_batch: int = 8192,
     long_threshold: int = 2048,
     long_ratio: float = 0.30,
+    max_steps: int = 0,
 ):
     is_ddp = "RANK" in os.environ
     if is_ddp:
@@ -327,6 +402,7 @@ def train(
             train_ds,
             batch_sampler=batch_sampler,
             collate_fn=lambda b: collate_marker_fn(b, tokenizer, max_length=max_length),
+            pin_memory=(device.type == "cuda"),
         )
     else:
         train_sampler = DistributedSampler(train_ds, shuffle=True) if is_ddp else None
@@ -336,6 +412,7 @@ def train(
             sampler=train_sampler,
             shuffle=(train_sampler is None),
             collate_fn=lambda b: collate_marker_fn(b, tokenizer, max_length=max_length),
+            pin_memory=(device.type == "cuda"),
         )
 
     val_loader = DataLoader(
@@ -343,6 +420,7 @@ def train(
         batch_size=batch_size,
         shuffle=False,
         collate_fn=lambda b: collate_marker_fn(b, tokenizer, max_length=max_length),
+        pin_memory=(device.type == "cuda"),
     )
 
     total_steps = math.ceil(len(train_loader) / grad_accum_steps) * epochs
@@ -379,8 +457,13 @@ def train(
         model.train()
         epoch_loss = 0.0
         t0 = time.time()
+        profile: Dict[str, List[float]] = {"short": [], "long": []}
 
         for step, batch in enumerate(train_loader):
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            step_t0 = time.time()
+            seq_len = batch["input_ids"].shape[1]
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             labels = batch["labels"].to(device)
@@ -409,6 +492,10 @@ def train(
 
             epoch_loss += loss.item()
 
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            profile["long" if seq_len >= long_threshold else "short"].append(time.time() - step_t0)
+
             if is_main and ((step + 1) % 100 == 0 or (step + 1) == len(train_loader)):
                 elapsed = time.time() - t0
                 print(
@@ -416,6 +503,11 @@ def train(
                     f"Loss: {loss.item():.4f} (CE: {ce_loss.item():.4f}) Acc: {acc*100:.1f}% "
                     f"Elapsed: {elapsed:.1f}s"
                 )
+
+            if max_steps and (step + 1) >= max_steps:
+                if is_main:
+                    _report_step_profile(profile, len(train_loader), epochs, world_size)
+                return
 
         # Validation
         if is_main:
@@ -519,6 +611,9 @@ if __name__ == "__main__":
                         help="Token count at or above which an example counts as long.")
     parser.add_argument("--long_ratio", type=float, default=0.30,
                         help="Target fraction of batches drawn from long examples.")
+    parser.add_argument("--max_steps", type=int, default=0,
+                        help="Stop after N steps and print a step-timing/cost profile. "
+                             "Probe mode: no checkpoint is written.")
     args = parser.parse_args()
 
     train(
@@ -538,4 +633,5 @@ if __name__ == "__main__":
         max_tokens_per_batch=args.max_tokens_per_batch,
         long_threshold=args.long_threshold,
         long_ratio=args.long_ratio,
+        max_steps=args.max_steps,
     )

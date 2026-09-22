@@ -23,8 +23,10 @@ SUBNETS = [
 AMI_ID = "ami-0e24e0019a12c5b13"
 
 CANDIDATE_TYPES = [
-    ("g4dn.12xlarge", "4x NVIDIA T4 64GB, 48 vCPU (Spot ~$1.53/hr)"),
-    ("g5.12xlarge", "4x NVIDIA A10G 96GB, 48 vCPU (Spot ~$3.67/hr)"),
+    # A10G first: ~2x the throughput of a T4 for this workload and 24GB per GPU,
+    # which makes it both faster and cheaper per epoch despite the higher rate.
+    ("g5.12xlarge", "4x NVIDIA A10G 96GB, 48 vCPU (On-Demand ~$5.67/hr)"),
+    ("g4dn.12xlarge", "4x NVIDIA T4 64GB, 48 vCPU (On-Demand ~$3.91/hr)"),
     ("g5.4xlarge", "1x NVIDIA A10G 24GB, 16 vCPU (Spot ~$0.69/hr)"),
     ("g5.2xlarge", "1x NVIDIA A10G 24GB, 8 vCPU (Spot ~$0.54/hr)"),
 ]
@@ -34,6 +36,18 @@ S3_TARGET = "s3://model-weight/von-option-marker-universal"
 USER_DATA_TEMPLATE = """#!/bin/bash
 set -e
 exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+
+# Any failure must stop billing. Without this, `set -e` exits before the
+# shutdown line below and the instance idles until the watchdog fires.
+cleanup() {{
+  rc=$?
+  echo "=== [EXIT rc=$rc] uploading log and shutting down ==="
+  aws s3 cp /var/log/user-data.log {s3_target}/run.log || true
+  shutdown -h now
+}}
+trap cleanup EXIT
+
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # Cancel any lingering shutdown timer and set a rock-solid 240-minute watchdog
 shutdown -c 2>/dev/null || true

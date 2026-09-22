@@ -388,7 +388,7 @@ def train(
     max_position_embeddings: int = 8192,
     max_length: int = 8192,
     length_bucketing: bool = True,
-    max_tokens_per_batch: int = 8192,
+    max_tokens_per_batch: int = 0,
     long_threshold: int = 2048,
     long_ratio: float = 0.30,
     max_steps: int = 0,
@@ -423,6 +423,19 @@ def train(
 
     train_sampler = None
     batch_sampler = None
+    if length_bucketing and max_tokens_per_batch <= 0:
+        # Auto-size from real device memory. A fixed budget calibrated on a 24GB
+        # A10G OOMs a 14.5GB T4, and DDP gradient buckets cost more than the
+        # single-GPU probe measured, so derive it and stay conservative.
+        if device.type == "cuda":
+            total_gb = torch.cuda.get_device_properties(device).total_memory / (1024 ** 3)
+            max_tokens_per_batch = int(min(8192, max(2048, total_gb * 220)))
+        else:
+            max_tokens_per_batch = 4096
+        if is_main:
+            print(f"  -> Auto token budget: {max_tokens_per_batch:,} tok/batch "
+                  f"({'%.1f' % total_gb if device.type == 'cuda' else 'cpu'} GB/GPU)")
+
     if length_bucketing:
         # Bucket by estimated length so long documents are both seen often enough
         # and batched small enough to fit. Falls back to plain shuffling if the
@@ -666,9 +679,10 @@ if __name__ == "__main__":
                              "context or the scorer head never learns long-premise aggregation.")
     parser.add_argument("--no_length_bucketing", action="store_true",
                         help="Disable length-bucketed batching (uniform shuffling instead).")
-    parser.add_argument("--max_tokens_per_batch", type=int, default=8192,
-                        help="Padded token budget per batch. Long batches get fewer rows so a "
-                             "single long document cannot OOM the card.")
+    parser.add_argument("--max_tokens_per_batch", type=int, default=0,
+                        help="Padded token budget per batch (0 = auto-size from GPU memory). "
+                             "Long batches get fewer rows so a single long document cannot "
+                             "OOM the card.")
     parser.add_argument("--long_threshold", type=int, default=2048,
                         help="Token count at or above which an example counts as long.")
     parser.add_argument("--long_ratio", type=float, default=0.30,

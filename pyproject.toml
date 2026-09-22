@@ -1,14 +1,15 @@
 [project]
 name = "von-sdk"
-version = "1.0.1"
+version = "1.0.2"
 description = "Von - The open-source System One decision model. Sub-25ms, local, calibrated decision primitives in homage to John von Neumann and Ludwig von Mises."
 authors = [
     { name = "Victor Hugo", email = "victor.panisa@gmail.com" }
 ]
+
 requires-python = ">=3.12"
 dependencies = [
     "torch>=2.0.0",
-    "transformers>=4.48.0",
+    "transformers>=5.0.0",
     "accelerate>=0.26.0",
     "pydantic>=2.0.0",
     "fastapi>=0.110.0",
@@ -16,6 +17,10 @@ dependencies = [
     "click>=8.1.0",
     "httpx>=0.27.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/wfzyx/von"
+Issues = "https://github.com/wfzyx/von/issues"
 
 [project.scripts]
 von = "von.cli:main"

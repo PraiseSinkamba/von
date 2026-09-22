@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Union
 import click
 import uvicorn
 
+from .engine import VON_CURRENT_ALIASES, VON_VERSION
 from .api import decide as api_decide
 from .api import judge as api_judge
 from .api import rate as api_rate
@@ -24,7 +25,16 @@ def main():
 @main.command()
 @click.option("--host", default="0.0.0.0", help="Host interface to bind on.")
 @click.option("--port", default=8000, type=int, help="Port to listen on.")
-@click.option("--model", "backend", default="von-1.1", type=click.Choice(["von-1.1", "von", "latest"]), help="Von model version to load.")
+@click.option(
+    "--model",
+    "backend",
+    default=f"von-{VON_VERSION}",
+    # Derived from the engine rather than restated: a hardcoded copy had already
+    # drifted, so the CLI rejected von-latest and default while the library
+    # accepted them.
+    type=click.Choice(sorted(VON_CURRENT_ALIASES)),
+    help=f"Von model version to load (Von {VON_VERSION} is the only model).",
+)
 @click.option("--device", default="auto", help="Compute device: 'auto', 'cuda', 'rocm', 'mps', 'dml', 'cpu'.")
 @click.option("--reload", is_flag=True, default=False, help="Enable auto-reload.")
 def serve(host: str, port: int, backend: str, device: str, reload: bool):

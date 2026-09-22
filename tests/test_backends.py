@@ -81,3 +81,21 @@ def test_unknown_model_names_the_current_version():
     message = str(exc.value)
     assert "option-marker" in message
     assert VON_VERSION in message
+
+
+def test_cli_model_choices_match_engine_aliases():
+    """The CLI must not restate the alias list.
+
+    A hardcoded copy had already drifted: `von serve --model von-latest` was
+    rejected while the library accepted it.
+    """
+    import re
+
+    from click.testing import CliRunner
+
+    from von.cli import main
+
+    result = CliRunner().invoke(main, ["serve", "--help"])
+    match = re.search(r"--model \[(.*?)\]", result.output)
+    assert match, "serve --help no longer advertises --model choices"
+    assert set(match.group(1).split("|")) == set(VON_CURRENT_ALIASES)

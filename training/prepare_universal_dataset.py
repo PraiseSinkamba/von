@@ -847,8 +847,10 @@ def build_universal_corpus(
     long_context: int = 40000,
     seed: int = 42,
 ):
+    from .prepare_long_context_dataset import ensure_dir, write_jsonl
+
     random.seed(seed)
-    os.makedirs(output_dir, exist_ok=True)
+    ensure_dir(output_dir)
 
     print("=============================================================")
     print("Building Phase 4 Universal Decision Corpus (200k samples)")
@@ -935,13 +937,10 @@ def build_universal_corpus(
     train_path = os.path.join(output_dir, "train.jsonl")
     val_path = os.path.join(output_dir, "val.jsonl")
 
-    with open(train_path, "w", encoding="utf-8") as f:
-        for rec in train_records:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-
-    with open(val_path, "w", encoding="utf-8") as f:
-        for rec in val_records:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    # Atomic writes: a truncated corpus is worse than no corpus, since the
+    # trainer only discovers it after the instance is already billing.
+    write_jsonl(train_records, train_path)
+    write_jsonl(val_records, val_path)
 
     print(f"Saved {len(train_records):,} train rows to {train_path}")
     print(f"Saved {len(val_records):,} val rows to {val_path}")

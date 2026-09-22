@@ -88,7 +88,7 @@ def estimate_packed_tokens(item: dict) -> int:
     n = len(item.get("state", "")) + len(item.get("question", ""))
     for opt in item.get("options", []):
         n += len(opt.get("description", "")) + 8  # +8 for the mask/sep scaffolding
-    return max(8, int(n / 4.9))
+    return max(8, n * 10 // 49)  # ~4.9 chars/token, in integer arithmetic
 
 
 # Estimates are approximate, so leave explicit headroom against the token budget.
@@ -177,7 +177,7 @@ class LengthBucketedBatchSampler(Sampler):
         if self.long_idx:
             # Target count so long batches are `long_ratio` of the final mix.
             n_short = len(short_batches)
-            target_long = int(round(n_short * self.long_ratio / max(1e-6, 1 - self.long_ratio)))
+            target_long = round(n_short * self.long_ratio / max(1e-6, 1 - self.long_ratio))
 
             pool: List[int] = []
             while True:
@@ -292,6 +292,26 @@ def compute_marker_rlcd_loss(
     return total_loss, mean_ce, accuracy
 
 
+def _write_json(path: str, payload: dict) -> None:
+    """Write JSON, naming the path if the write fails."""
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+    except OSError as exc:
+        raise RuntimeError(f"Cannot write {path!r}: {exc}") from exc
+
+
+def _env_int(name: str) -> int:
+    """Read a required integer env var, naming it if it is missing or malformed."""
+    raw = os.environ.get(name)
+    if raw is None:
+        raise RuntimeError(f"DDP environment variable {name} is not set.")
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"DDP environment variable {name}={raw!r} is not an integer.") from exc
+
+
 def _report_step_profile(
     profile: Dict[str, List[float]],
     batches_per_epoch: int,
@@ -376,9 +396,9 @@ def train(
     is_ddp = "RANK" in os.environ
     if is_ddp:
         torch.distributed.init_process_group(backend="nccl")
-        rank = int(os.environ["RANK"])
-        local_rank = int(os.environ["LOCAL_RANK"])
-        world_size = int(os.environ["WORLD_SIZE"])
+        rank = _env_int("RANK")
+        local_rank = _env_int("LOCAL_RANK")
+        world_size = _env_int("WORLD_SIZE")
         device = torch.device(f"cuda:{local_rank}")
         torch.cuda.set_device(device)
         is_main = (rank == 0)
@@ -473,7 +493,7 @@ def train(
     )
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
-        num_warmup_steps=int(total_steps * 0.08),
+        num_warmup_steps=total_steps * 8 // 100,
         num_training_steps=total_steps,
     )
     scaler = torch.amp.GradScaler("cuda", enabled=(device.type == "cuda"))
@@ -583,20 +603,27 @@ def train(
 
             if avg_val_acc > best_val_acc:
                 best_val_acc = avg_val_acc
-                os.makedirs(output_dir, exist_ok=True)
-                torch.save(model.state_dict(), os.path.join(output_dir, "option_marker.pt"))
-                model.encoder.save_pretrained(output_dir)
-                tokenizer.save_pretrained(output_dir)
-
-                calib_config = {
-                    "model_type": "option_marker",
-                    "base_model": base_model_id,
-                    "best_val_accuracy": round(best_val_acc, 4),
-                    "epoch": epoch,
-                    "timestamp": time.time(),
-                }
-                with open(os.path.join(output_dir, "marker_calibration.json"), "w") as f:
-                    json.dump(calib_config, f, indent=2)
+                # A failure here costs the whole run's best checkpoint, so say
+                # exactly what broke rather than surfacing a bare OSError.
+                try:
+                    os.makedirs(output_dir, exist_ok=True)
+                    torch.save(model.state_dict(), os.path.join(output_dir, "option_marker.pt"))
+                    model.encoder.save_pretrained(output_dir)
+                    tokenizer.save_pretrained(output_dir)
+                    _write_json(
+                        os.path.join(output_dir, "marker_calibration.json"),
+                        {
+                            "model_type": "option_marker",
+                            "base_model": base_model_id,
+                            "best_val_accuracy": round(best_val_acc, 4),
+                            "epoch": epoch,
+                            "timestamp": time.time(),
+                        },
+                    )
+                except OSError as exc:
+                    raise RuntimeError(
+                        f"Failed saving epoch {epoch} checkpoint to {output_dir!r}: {exc}"
+                    ) from exc
 
                 if s3_target:
                     print(f"Syncing Epoch {epoch} checkpoint to S3: {s3_target} ...")
@@ -609,8 +636,7 @@ def train(
             "best_val_accuracy": round(best_val_acc, 4),
             "timestamp": time.time(),
         }
-        with open(os.path.join(output_dir, "marker_calibration.json"), "w") as f:
-            json.dump(calib_config, f, indent=2)
+        _write_json(os.path.join(output_dir, "marker_calibration.json"), calib_config)
 
         if s3_target:
             print(f"Uploading artifacts to S3: {s3_target} ...")

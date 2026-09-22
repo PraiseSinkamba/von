@@ -101,8 +101,11 @@ def launch(steps: int, long_ratio: float, max_train: int, long_context: int, wat
         watchdog=watchdog,
     )
     path = "/tmp/user_data_probe.sh"
-    with open(path, "w") as f:
-        f.write(user_data)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(user_data)
+    except OSError as exc:
+        raise RuntimeError(f"Cannot stage user-data script at {path!r}: {exc}") from exc
 
     for itype, desc in CANDIDATE_TYPES:
         print(f"Evaluating {itype} [{desc}]...")

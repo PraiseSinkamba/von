@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 from typing import Dict, List, Optional
 
@@ -115,14 +116,15 @@ def harvest_legalbench(max_rows: Optional[int] = None, verbose: bool = True) -> 
         fallback_q = cfg.replace("contract_nli_", "").replace("maud_", "").replace("_", " ")
         fallback_q = f"Based on the document, does the following hold: {fallback_q}?"
 
-        for row in ds:
+        for raw_row in ds:
+            row: Dict[str, object] = dict(raw_row)  # HF rows are mappings; make that explicit
             answer = str(row["answer"]).strip().lower()
             if answer not in YESNO_LABELS:
                 continue  # skip A/B/C/D tasks: bare letters carry no semantics
-            premise = (row[text_col] or "").strip()
+            premise = str(row[text_col] or "").strip()
             if not premise:
                 continue
-            question = (row.get("question") or fallback_q).strip()
+            question = str(row.get("question") or fallback_q).strip()
             records.append({
                 "state": premise,
                 "question": question,
@@ -231,7 +233,7 @@ def _filler_block(rng: random.Random, n_sections: int, start_idx: int) -> str:
     return "\n\n".join(out)
 
 
-def _build_insurance_doc(rng: random.Random, target_tokens: int) -> Dict[str, object]:
+def _build_insurance_doc(rng: random.Random, target_tokens: int) -> Dict[str, str]:
     """Vary the claim facts so every outcome label is reachable.
 
     The label is sampled first, then the document's facts are constructed to make
@@ -333,7 +335,7 @@ def _build_insurance_doc(rng: random.Random, target_tokens: int) -> Dict[str, ob
     return {"body": "\n\n".join(parts), "label": label}
 
 
-def _build_procurement_doc(rng: random.Random, target_tokens: int) -> Dict[str, object]:
+def _build_procurement_doc(rng: random.Random, target_tokens: int) -> Dict[str, str]:
     """Sample the target approval level, then size the request to land in it."""
     bands = [10000, 50000, 150000, 500000]
     levels = [
@@ -413,7 +415,7 @@ def _build_procurement_doc(rng: random.Random, target_tokens: int) -> Dict[str, 
 
 
 
-def _build_warranty_doc(rng: random.Random, target_tokens: int) -> Dict[str, object]:
+def _build_warranty_doc(rng: random.Random, target_tokens: int) -> Dict[str, str]:
     """Sample the warranty outcome, then set age / serial range / repairability to match."""
     label = rng.choice([
         "full_repair_no_charge",
@@ -520,7 +522,7 @@ def generate_synthetic_policies(
 
         body = built["body"]
         # Pad toward the target length with additional neutral sections.
-        target_words = rng.randint(min_tokens, max_tokens) // 1.4
+        target_words = rng.randint(min_tokens, max_tokens) * 10 // 14
         guard = 0
         while len(body.split()) < target_words and guard < 12:
             body += "\n\n" + _filler_block(rng, 3, 20 + guard * 3)
@@ -568,10 +570,39 @@ def build_long_context_corpus(
     return records
 
 
+def ensure_dir(path: str) -> None:
+    """Create a directory, reporting the path on failure instead of a bare OSError."""
+    if not path:
+        return
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError as exc:
+        raise RuntimeError(f"Cannot create output directory {path!r}: {exc}") from exc
+
+
 def write_jsonl(records: List[dict], path: str) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        for r in records:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    """Write records atomically.
+
+    A crash or full disk partway through a direct write leaves a truncated final
+    line, which downstream loaders then reject as malformed JSON -- a failure we
+    have already hit once. Writing to a sibling temp file and renaming means the
+    destination either has every record or is untouched.
+    """
+    ensure_dir(os.path.dirname(path))
+    tmp = f"{path}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            for r in records:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except OSError as exc:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise RuntimeError(f"Failed writing corpus to {path!r}: {exc}") from exc
 
 DATASET_CARD = """---
 license: apache-2.0
@@ -670,22 +701,34 @@ uv run python training/prepare_long_context_dataset.py \\
 
 def push_to_hub(jsonl_path: str, repo_id: str, private: bool = False) -> None:
     """Publish the corpus and its card to the Hugging Face Hub."""
-    from huggingface_hub import HfApi
+    try:
+        from huggingface_hub import HfApi
+    except ImportError as exc:
+        raise RuntimeError(
+            "huggingface_hub is required to publish: pip install huggingface_hub"
+        ) from exc
 
-    api = HfApi()
-    api.create_repo(repo_id=repo_id, repo_type="dataset", private=private, exist_ok=True)
-    api.upload_file(
-        path_or_fileobj=jsonl_path,
-        path_in_repo="long_context.jsonl",
-        repo_id=repo_id,
-        repo_type="dataset",
-    )
-    api.upload_file(
-        path_or_fileobj=DATASET_CARD.encode("utf-8"),
-        path_in_repo="README.md",
-        repo_id=repo_id,
-        repo_type="dataset",
-    )
+    try:
+        api = HfApi()
+        api.create_repo(repo_id=repo_id, repo_type="dataset", private=private, exist_ok=True)
+        api.upload_file(
+            path_or_fileobj=jsonl_path,
+            path_in_repo="long_context.jsonl",
+            repo_id=repo_id,
+            repo_type="dataset",
+        )
+        api.upload_file(
+            path_or_fileobj=DATASET_CARD.encode("utf-8"),
+            path_in_repo="README.md",
+            repo_id=repo_id,
+            repo_type="dataset",
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Publishing to {repo_id!r} failed ({type(exc).__name__}: {exc}). "
+            f"The local corpus at {jsonl_path!r} is unaffected. Check HF_TOKEN and repo permissions."
+        ) from exc
+
     print(f"Published -> https://huggingface.co/datasets/{repo_id}")
 
 
@@ -711,22 +754,28 @@ def main() -> None:
         seed=args.seed,
     )
 
-    import os
-    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     write_jsonl(records, args.out)
     print(f"Wrote {len(records):,} records -> {args.out}")
 
     if args.stats:
-        from transformers import AutoTokenizer
-        import numpy as np
-        tok = AutoTokenizer.from_pretrained(args.tokenizer)
-        sample = records[:600]
-        lens = np.array([len(tok.encode(r["state"])) for r in sample])
-        print("\n=== premise token length (sample of %d) ===" % len(sample))
-        print(f"  median {int(np.median(lens))}  p90 {int(np.percentile(lens, 90))}  max {int(lens.max())}")
-        for lo, hi in [(0, 512), (512, 1024), (1024, 2048), (2048, 4096), (4096, 10**9)]:
-            frac = float(((lens >= lo) & (lens < hi)).mean())
-            print(f"  {lo:>5}-{hi if hi < 10**9 else 'inf':<5}: {frac:6.1%}")
+        try:
+            from transformers import AutoTokenizer
+            import numpy as np
+
+            tok = AutoTokenizer.from_pretrained(args.tokenizer)
+        except Exception as exc:
+            # Stats are diagnostic only; a missing tokenizer must not discard a
+            # corpus that has already been written successfully.
+            print(f"  !! Skipping length stats ({type(exc).__name__}: {exc})")
+        else:
+            sample = records[:600]
+            lens = np.array([len(tok.encode(r["state"])) for r in sample])
+            median, p90, longest = int(np.median(lens)), int(np.percentile(lens, 90)), int(lens.max())
+            print("\n=== premise token length (sample of %d) ===" % len(sample))
+            print(f"  median {median}  p90 {p90}  max {longest}")
+            for lo, hi in [(0, 512), (512, 1024), (1024, 2048), (2048, 4096), (4096, 10**9)]:
+                frac = float(((lens >= lo) & (lens < hi)).mean())
+                print(f"  {lo:>5}-{hi if hi < 10**9 else 'inf':<5}: {frac:6.1%}")
 
     if args.push_to_hub:
         push_to_hub(args.out, args.push_to_hub, private=args.private)

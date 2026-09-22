@@ -38,7 +38,7 @@ class OptionMarkerDataset(Dataset):
         return self.rows[idx]
 
 
-def collate_marker_fn(batch: List[dict], tokenizer, max_length: int = 512):
+def collate_marker_fn(batch: List[dict], tokenizer, max_length: int = 8192):
     packed_texts = []
     labels = []
     mask = tokenizer.mask_token
@@ -126,6 +126,7 @@ def train(
     lr: float = 3e-5,
     brier_weight: float = 0.5,
     max_position_embeddings: int = 8192,
+    max_length: int = 8192,
 ):
     is_ddp = "RANK" in os.environ
     if is_ddp:
@@ -160,13 +161,13 @@ def train(
         batch_size=batch_size,
         sampler=train_sampler,
         shuffle=(train_sampler is None),
-        collate_fn=lambda b: collate_marker_fn(b, tokenizer),
+        collate_fn=lambda b: collate_marker_fn(b, tokenizer, max_length=max_length),
     )
     val_loader = DataLoader(
         val_ds,
         batch_size=batch_size,
         shuffle=False,
-        collate_fn=lambda b: collate_marker_fn(b, tokenizer),
+        collate_fn=lambda b: collate_marker_fn(b, tokenizer, max_length=max_length),
     )
 
     total_steps = math.ceil(len(train_loader) / grad_accum_steps) * epochs
@@ -329,6 +330,9 @@ if __name__ == "__main__":
     parser.add_argument("--grad_accum_steps", type=int, default=2)
     parser.add_argument("--lr", type=float, default=3e-5)
     parser.add_argument("--brier_weight", type=float, default=0.5)
+    parser.add_argument("--max_length", type=int, default=8192,
+                        help="Tokenizer truncation length during training. Must match inference-time "
+                             "context or the scorer head never learns long-premise aggregation.")
     args = parser.parse_args()
 
     train(
@@ -343,4 +347,5 @@ if __name__ == "__main__":
         lr=args.lr,
         brier_weight=args.brier_weight,
         max_position_embeddings=args.max_position_embeddings,
+        max_length=args.max_length,
     )

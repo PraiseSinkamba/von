@@ -15,3 +15,4 @@ src/von/local_backends/
 js/node_modules/
 
 _vizdoom.ini
+data_long/

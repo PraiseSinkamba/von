@@ -56,7 +56,18 @@ shutdown -h +240 &
 echo "=== [VON UNIVERSAL DECISION TRAINING START] ==="
 export DEBIAN_FRONTEND=noninteractive
 
-apt-get update && apt-get install -y awscli curl git
+# Ubuntu's unattended-upgrades grabs the dpkg lock during boot and races this
+# install; losing that race exits the whole script (rc=100) after the instance
+# is already billing. Stop the timer, then still pass a lock timeout in case it
+# is mid-run.
+systemctl stop unattended-upgrades.service 2>/dev/null || true
+systemctl disable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+for i in $(seq 1 60); do
+  fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break
+  echo "waiting for dpkg lock ($i)..."; sleep 5
+done
+APT_OPTS="-o DPkg::Lock::Timeout=600 -y"
+apt-get $APT_OPTS update && apt-get $APT_OPTS install awscli curl git
 
 curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="/root/.local/bin:$PATH"

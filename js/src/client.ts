@@ -12,6 +12,13 @@ import type {
 } from "./types.js";
 import { choice, noul, score } from "./primitives.js";
 
+/**
+ * The model version this SDK targets. Von ships exactly one model and the
+ * server always stamps responses with the version it actually served, so this
+ * is a request hint rather than a selector.
+ */
+export const VON_MODEL = "von-1.1.0";
+
 export class VonError extends Error {
   public status?: number;
   public details?: unknown;
@@ -45,7 +52,7 @@ export class VonClient {
   async systemOne({
     state,
     questions,
-    model = "von-1.0.0",
+    model = VON_MODEL,
   }: {
     state: unknown;
     questions: Record<string, Question>;
@@ -105,7 +112,7 @@ export class VonClient {
     state: unknown,
     choices: Record<string, string | null> | string[],
     instructions = "Which option best describes the state?",
-    model = "von-1.0.0"
+    model = VON_MODEL
   ): Promise<ChoiceAnswer> {
     const q = choice(instructions, choices);
     const resp = await this.systemOne({
@@ -124,7 +131,7 @@ export class VonClient {
     instructions: string,
     posCriteria?: string,
     negCriteria?: string,
-    model = "von-1.0.0"
+    model = VON_MODEL
   ): Promise<number> {
     const criteria =
       posCriteria || negCriteria
@@ -146,7 +153,7 @@ export class VonClient {
     state: unknown,
     levels: string[] | Record<string, string>,
     instructions = "Rate the severity or level:",
-    model = "von-1.0.0"
+    model = VON_MODEL
   ): Promise<ScoreAnswer> {
     const q = score(instructions, levels);
     const resp = await this.systemOne({

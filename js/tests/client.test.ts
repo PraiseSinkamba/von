@@ -41,7 +41,7 @@ describe("Von JavaScript/TypeScript SDK", () => {
       return {
         ok: true,
         json: async () => ({
-          model: "von-1.0.0",
+          model: "von-1.1.0",
           answers: {
             dept: {
               type: "choice",
@@ -67,7 +67,7 @@ describe("Von JavaScript/TypeScript SDK", () => {
       });
 
       expect(capturedUrl).toBe("http://127.0.0.1:9000/v1/systemone");
-      expect(capturedBody.model).toBe("von-1.0.0");
+      expect(capturedBody.model).toBe("von-1.1.0");
       expect(capturedBody.state).toBe("Refund requested");
       expect(capturedBody.questions.dept.type).toBe("choice");
       expect(resp.answers.dept.type).toBe("choice");
@@ -81,7 +81,7 @@ describe("Von JavaScript/TypeScript SDK", () => {
     const mockFetch = async () => ({
       ok: true,
       json: async () => ({
-        model: "von-1.0.0",
+        model: "von-1.1.0",
         answers: {
           decision: {
             type: "choice",

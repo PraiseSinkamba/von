@@ -120,8 +120,10 @@ class VonEngine:
         questions: Dict[str, Union[Question, Dict[str, Any]]],
         model: Optional[str] = None,
     ) -> SystemOneResponse:
-        if model in ("von-latest", "von-preview", "jev-latest", "jev-preview", None):
-            resolved_model = f"von-{VON_VERSION}.0"
-        else:
-            resolved_model = model
+        # Von ships exactly one model, so the response is always stamped with the
+        # version actually served. Echoing the caller's requested id back would
+        # let a stale client (JS SDK 1.0.1 still asks for "von-1.0.0") receive a
+        # response labelled as a model that no longer exists, served by a
+        # different one. Old ids are accepted, never reflected.
+        resolved_model = f"von-{VON_VERSION}.0"
         return self.backend.evaluate(state=state, questions=questions, model=resolved_model)

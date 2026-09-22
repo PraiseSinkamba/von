@@ -5,8 +5,7 @@ on:
     branches:
       - master
     paths:
-      - "README.md"
-      - "checkpoints/von-modernbert-rlcd/README.md"
+      - "hf/MODEL_CARD.md"
       - "assets/**"
   workflow_dispatch:
 
@@ -41,7 +40,10 @@ jobs:
           repo_id = "wfzyx/von"
 
           # Upload updated model card
-          card_path = "checkpoints/von-modernbert-rlcd/README.md" if os.path.exists("checkpoints/von-modernbert-rlcd/README.md") else "README.md"
+          # hf/MODEL_CARD.md is the real model card: it carries the YAML metadata
+          # block the Hub requires. The project README has no frontmatter, which is
+          # what produced "empty or missing yaml metadata in repo card".
+          card_path = "hf/MODEL_CARD.md"
           if os.path.exists(card_path):
               print(f"Uploading {card_path} to {repo_id}...")
               api.upload_file(

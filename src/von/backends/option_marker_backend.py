@@ -61,6 +61,7 @@ class OptionMarkerBackend(BaseBackend):
             if self._model is None:
                 pt_path = os.path.join(self.checkpoint_dir, "option_marker.pt")
                 loaded_from = None
+                hub_calib_path = None
 
                 if os.path.exists(pt_path):
                     # Load trained OptionMarkerModel from local checkpoint
@@ -77,6 +78,10 @@ class OptionMarkerBackend(BaseBackend):
                         state_dict = torch.load(cached_pt, map_location=self.device, weights_only=True)
                         model.load_state_dict(state_dict, strict=True)
                         loaded_from = f"Hugging Face Hub 'wfzyx/von-1.0:option_marker.pt' ({cached_pt})"
+                        try:
+                            hub_calib_path = hf_hub_download(repo_id="wfzyx/von-1.0", filename="marker_calibration.json")
+                        except Exception:
+                            hub_calib_path = None
                     except Exception as exc:
                         raise RuntimeError(
                             f"Failed to load Option-Marker decision weights: could not find local '{pt_path}' "
@@ -84,11 +89,13 @@ class OptionMarkerBackend(BaseBackend):
                             f"Refusing to run with an untrained random scoring head. Error: {exc}"
                         ) from exc
 
-                print(f"[von-option-marker] Successfully loaded trained weights from {loaded_from}")
                 model = model.to(self.device).eval()
 
-                # Load fitted temperature if present
+                # Load fitted temperature if present: prefer local calibration file, fall back
+                # to the one fetched alongside the weights from the Hub.
                 calib_path = os.path.join(self.checkpoint_dir, "marker_calibration.json")
+                if not os.path.exists(calib_path) and hub_calib_path:
+                    calib_path = hub_calib_path
                 if os.path.exists(calib_path):
                     try:
                         with open(calib_path, "r", encoding="utf-8") as f:
@@ -98,6 +105,11 @@ class OptionMarkerBackend(BaseBackend):
                         self._default_temp = 1.0
                 else:
                     self._default_temp = 1.0
+
+                if self._default_temp != 1.0:
+                    print(f"[von-option-marker] Successfully loaded trained weights from {loaded_from} (temperature {self._default_temp})")
+                else:
+                    print(f"[von-option-marker] Successfully loaded trained weights from {loaded_from} (uncalibrated, T=1.0)")
 
                 self._model = model
             return self._model

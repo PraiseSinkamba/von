@@ -54,7 +54,7 @@ cd /opt/von
 
 /root/.local/bin/uv venv --clear /opt/von/.venv
 /root/.local/bin/uv pip install --python /opt/von/.venv torch torchvision --index-url https://download.pytorch.org/whl/cu121
-/root/.local/bin/uv pip install --python /opt/von/.venv transformers datasets scipy sentencepiece tiktoken accelerate pydantic
+/root/.local/bin/uv pip install --python /opt/von/.venv transformers datasets scipy sentencepiece tiktoken accelerate pydantic awscli
 export PYTHONPATH="/opt/von/src:$PYTHONPATH"
 
 # Build Phase 4 Universal Decision Corpus (290k samples)
@@ -93,10 +93,11 @@ def run_aws(cmd: list) -> dict:
     return json.loads(res.stdout)
 
 
-def launch():
+def launch(on_demand: bool = False):
+    market_str = "On-Demand (Guaranteed)" if on_demand else "Spot"
     print("================================================================")
-    print("  VON UNIVERSAL (PHASE 4) TRAINING LAUNCHER")
-    print("  Corpus:           200,000 samples across 49 domains")
+    print(f"  VON UNIVERSAL (PHASE 4) TRAINING LAUNCHER [{market_str}]")
+    print("  Corpus:           290,000 samples across 49 domains")
     print("  Cluster Target:   4x GPU (g4dn.12xlarge / g5.12xlarge)")
     print("  Region:           us-west-2")
     print("  Target S3 Prefix: s3://model-weight/von-option-marker-universal")
@@ -114,23 +115,26 @@ def launch():
         for subnet_id, az in SUBNETS:
             print(f"  -> Trying {itype} in {az} ({subnet_id})...")
             try:
-                res = run_aws([
+                run_args = [
                     "ec2", "run-instances",
                     "--image-id", AMI_ID,
                     "--instance-type", itype,
                     "--subnet-id", subnet_id,
                     "--iam-instance-profile", f"Name={IAM_PROFILE}",
-                    "--instance-market-options", json.dumps({"MarketType": "spot"}),
                     "--user-data", f"file://{user_data_path}",
                     "--count", "1",
                     "--tag-specifications", json.dumps([{
                         "ResourceType": "instance",
-                        "Tags": [{"Key": "Name", "Value": "von-universal-phase4-training"}]
+                        "Tags": [{"Key": "Name", "Value": f"von-universal-phase4-{'ondemand' if on_demand else 'spot'}"}]
                     }]),
-                ])
+                ]
+                if not on_demand:
+                    run_args.extend(["--instance-market-options", json.dumps({"MarketType": "spot"})])
+
+                res = run_aws(run_args)
                 instance_id = res["Instances"][0]["InstanceId"]
                 selected_type = itype
-                print(f"\n-> SUCCESS! Launched {itype} Spot instance in {az}: {instance_id}")
+                print(f"\n-> SUCCESS! Launched {itype} {market_str} instance in {az}: {instance_id}")
                 break
             except Exception as e:
                 err = str(e)
@@ -142,7 +146,7 @@ def launch():
             break
 
     if not instance_id:
-        print("\nAll Spot candidate pools exhausted.")
+        print(f"\nAll {market_str} candidate pools exhausted.")
         return
 
     print("\nWaiting for instance to enter 'running' state...")
@@ -154,8 +158,15 @@ def launch():
             break
         time.sleep(10)
 
-    print("\nUniversal Phase 4 Spot training instance is RUNNING!")
+    print(f"\nUniversal Phase 4 {market_str} training instance is RUNNING!")
     print(f"Artifacts will automatically upload to {S3_TARGET} upon completion.")
+    return instance_id
+
+
+if __name__ == "__main__":
+    import sys
+    on_demand_flag = "--on-demand" in sys.argv
+    launch(on_demand=on_demand_flag)
 
 
 if __name__ == "__main__":

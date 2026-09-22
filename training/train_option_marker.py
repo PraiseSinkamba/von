@@ -294,7 +294,7 @@ def train(
 
                 if s3_target:
                     print(f"Syncing Epoch {epoch} checkpoint to S3: {s3_target} ...")
-                    os.system(f"aws s3 cp --recursive {output_dir}/ {s3_target}/")
+                    os.system(f"/usr/bin/aws s3 cp --recursive {output_dir}/ {s3_target}/ || aws s3 cp --recursive {output_dir}/ {s3_target}/")
 
     if is_main:
         calib_config = {
@@ -308,7 +308,7 @@ def train(
 
         if s3_target:
             print(f"Uploading artifacts to S3: {s3_target} ...")
-            os.system(f"aws s3 cp --recursive {output_dir}/ {s3_target}/")
+            os.system(f"/usr/bin/aws s3 cp --recursive {output_dir}/ {s3_target}/ || aws s3 cp --recursive {output_dir}/ {s3_target}/")
             print("=== [OPTION-MARKER TRAINING COMPLETE] ===")
 
     if is_ddp:

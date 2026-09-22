@@ -57,7 +57,8 @@ cd /opt/von
 # Setup environment
 uv venv
 source .venv/bin/activate
-uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+# PyPI ships CUDA-enabled Linux torch wheels; the cu121 index now 404s.
+uv pip install torch torchvision
 uv pip install transformers datasets scipy sentencepiece tiktoken accelerate awscli
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 

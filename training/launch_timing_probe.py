@@ -54,8 +54,9 @@ tar -xzf /tmp/von-marker-src.tar.gz -C /opt/von
 cd /opt/von
 
 /root/.local/bin/uv venv --clear /opt/von/.venv
-/root/.local/bin/uv pip install --python /opt/von/.venv torch torchvision --index-url https://download.pytorch.org/whl/cu121
-/root/.local/bin/uv pip install --python /opt/von/.venv transformers datasets scipy sentencepiece tiktoken accelerate pydantic awscli
+# PyPI ships CUDA-enabled Linux torch wheels; the old cu121 index now 404s and
+# breaks the solve. One install so torch and its dependents resolve together.
+/root/.local/bin/uv pip install --python /opt/von/.venv torch torchvision transformers datasets scipy sentencepiece tiktoken accelerate pydantic awscli
 export PYTHONPATH="/opt/von/src:$PYTHONPATH"
 
 # Small corpus: per-batch cost depends on batch composition, not corpus size.

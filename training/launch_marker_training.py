@@ -52,7 +52,8 @@ tar -xzf /tmp/von-marker-src.tar.gz -C /opt/von
 cd /opt/von
 
 /root/.local/bin/uv venv
-/opt/von/.venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+# PyPI ships CUDA-enabled Linux torch wheels; the cu121 index now 404s.
+/opt/von/.venv/bin/pip install torch torchvision
 /opt/von/.venv/bin/pip install transformers datasets scipy sentencepiece tiktoken accelerate pydantic
 /opt/von/.venv/bin/pip install -e /opt/von
 export PYTHONPATH="/opt/von/src:$PYTHONPATH"

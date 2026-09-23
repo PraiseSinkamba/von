@@ -17,6 +17,17 @@ js/node_modules/
 _vizdoom.ini
 data_long/
 
-# Personal working notes - never publish
+# Personal working notes - never publish.
+# Patterned rather than named: the two that leaked (SOTA.md,
+# CONTEXT_EXPANSION.md) were committed by a broad `git add` before anyone
+# decided they were public, so block the shape, not just the filenames.
 SOTA.md
 CONTEXT_EXPANSION.md
+VON12_PROPOSAL.md
+*_PROPOSAL.md
+*_NOTES.md
+NOTES.md
+SCRATCH*.md
+DRAFT*.md
+private/
+.private/

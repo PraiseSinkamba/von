@@ -416,6 +416,7 @@ def train(
     long_threshold: int = 2048,
     long_ratio: float = 0.30,
     max_steps: int = 0,
+    init_checkpoint: Optional[str] = None,
 ):
     is_ddp = "RANK" in os.environ
     if is_ddp:
@@ -440,6 +441,21 @@ def train(
         base_model_id=base_model_id,
         max_position_embeddings=max_position_embeddings,
     ).to(device)
+    if init_checkpoint:
+        ckpt_path = init_checkpoint
+        if os.path.isdir(ckpt_path):
+            ckpt_path = os.path.join(ckpt_path, "option_marker.pt")
+        if not os.path.isfile(ckpt_path):
+            raise FileNotFoundError(f"--init_checkpoint given but no weights found at {ckpt_path}")
+        if is_main:
+            print(f"Continuing training from checkpoint: {ckpt_path}")
+        state = torch.load(ckpt_path, map_location=device)
+        missing, unexpected = model.load_state_dict(state, strict=True)
+        if missing or unexpected:
+            raise RuntimeError(
+                f"--init_checkpoint state_dict does not match model architecture "
+                f"(missing={missing}, unexpected={unexpected})"
+            )
     tokenizer = model.tokenizer
 
     train_ds = OptionMarkerDataset(train_path)
@@ -601,6 +617,34 @@ def train(
                 if is_main:
                     _report_step_profile(profile, len(train_loader), epochs, world_size,
                                          profile_seqlens, long_threshold)
+                    # A time-boxed run (--max_steps) is a real checkpoint request, not
+                    # just a timing probe, whenever an init_checkpoint/output_dir is
+                    # given: save unconditionally so a short-budget continuation isn't
+                    # thrown away for lack of a completed epoch's validation pass.
+                    try:
+                        os.makedirs(output_dir, exist_ok=True)
+                        torch.save(model.state_dict(), os.path.join(output_dir, "option_marker.pt"))
+                        model.encoder.save_pretrained(output_dir)
+                        tokenizer.save_pretrained(output_dir)
+                        _write_json(
+                            os.path.join(output_dir, "marker_calibration.json"),
+                            {
+                                "model_type": "option_marker",
+                                "base_model": base_model_id,
+                                "init_checkpoint": init_checkpoint,
+                                "max_steps_reached": step + 1,
+                                "validated": False,
+                                "timestamp": time.time(),
+                            },
+                        )
+                        print(f"Saved max_steps checkpoint ({step + 1} steps, unvalidated) to {output_dir}")
+                    except OSError as exc:
+                        raise RuntimeError(
+                            f"Failed saving max_steps checkpoint to {output_dir!r}: {exc}"
+                        ) from exc
+                    if s3_target:
+                        print(f"Syncing max_steps checkpoint to S3: {s3_target} ...")
+                        os.system(f"/usr/bin/aws s3 cp --recursive {output_dir}/ {s3_target}/ || aws s3 cp --recursive {output_dir}/ {s3_target}/")
                 return
 
         # Validation
@@ -714,8 +758,13 @@ if __name__ == "__main__":
     parser.add_argument("--long_ratio", type=float, default=0.30,
                         help="Target fraction of batches drawn from long examples.")
     parser.add_argument("--max_steps", type=int, default=0,
-                        help="Stop after N steps and print a step-timing/cost profile. "
-                             "Probe mode: no checkpoint is written.")
+                        help="Stop after N steps. If output_dir/s3_target are set this "
+                             "also saves an unvalidated checkpoint (time-boxed continuation "
+                             "run); otherwise it behaves as a timing probe only.")
+    parser.add_argument("--init_checkpoint", type=str, default=None,
+                        help="Path to an existing option_marker.pt (or its containing dir) "
+                             "to continue training from, instead of a fresh randomly-"
+                             "initialised scoring head.")
     args = parser.parse_args()
 
     train(
@@ -736,4 +785,5 @@ if __name__ == "__main__":
         long_threshold=args.long_threshold,
         long_ratio=args.long_ratio,
         max_steps=args.max_steps,
+        init_checkpoint=args.init_checkpoint,
     )

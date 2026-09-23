@@ -278,6 +278,141 @@ def make_score(rng: random.Random) -> dict:
     }
 
 
+# --- Numeric/rule composition (targets temporal_numeric, a distinct skill) ----
+# Unlike the evidence-weighing generators above, ground truth here is exact
+# arithmetic: sum stated component quantities (deliberately requiring the
+# model to combine 2-3 numbers stated in different sentences), apply a
+# rounding rule, then compare against a stated threshold. This mirrors
+# JevBench's temporal_numeric family (e.g. "gross weight = net cargo + tare +
+# restraints, rounded up, must not exceed 2,500 kg") without copying any of
+# its wording or numbers -- domain flavour, unit, and quantities are all
+# randomised per record.
+NUMERIC_DOMAINS = [
+    {
+        "item": "shipment", "unit": "kg", "cap_word": "weight limit",
+        "components": ["the base cargo weighs {v} {unit}",
+                        "the packaging adds {v} {unit}",
+                        "the restraint hardware adds {v} {unit}"],
+        "threshold_phrase": "the position's rule caps total {cap_word} at {t} {unit}",
+    },
+    {
+        "item": "roster", "unit": "hours", "cap_word": "duty-hour limit",
+        "components": ["the scheduled shift runs {v} {unit}",
+                        "a mandatory briefing adds {v} {unit}",
+                        "carried-over overtime adds {v} {unit}"],
+        "threshold_phrase": "policy sets the {cap_word} at {t} {unit}",
+    },
+    {
+        "item": "budget line", "unit": "thousand dollars", "cap_word": "spending cap",
+        "components": ["the base allocation is {v} {unit}",
+                        "an approved change order adds {v} {unit}",
+                        "a contingency draw adds {v} {unit}"],
+        "threshold_phrase": "the approved {cap_word} is {t} {unit}",
+    },
+    {
+        "item": "headcount", "unit": "people", "cap_word": "occupancy limit",
+        "components": ["the confirmed attendee count is {v} {unit}",
+                        "walk-up registrations add {v} {unit}",
+                        "staff on site add {v} {unit}"],
+        "threshold_phrase": "the venue's {cap_word} is {t} {unit}",
+    },
+]
+
+NUMERIC_VERDICT_OPTIONS = [
+    ("complies", "The total is at or under the limit."),
+    ("marginal_over", "The total exceeds the limit, but by a small margin."),
+    ("major_over", "The total exceeds the limit by a wide margin."),
+]
+
+
+def _numeric_scenario(rng: random.Random) -> Tuple[dict, float, float, List[str]]:
+    """Draws a domain, renders 2-3 component sentences, and computes the exact total.
+
+    Returns (domain, total, threshold, component_sentences). Ground truth from
+    here on is plain arithmetic -- no sigmoid, no estimation.
+    """
+    domain = rng.choice(NUMERIC_DOMAINS)
+    n_components = rng.choice([2, 2, 3])  # mostly 2-hop, sometimes 3-hop
+    chosen = rng.sample(domain["components"], n_components)
+    values = [round(rng.uniform(1, 40), 1) for _ in chosen]
+    total = round(sum(values), 1)
+    # Threshold drawn relative to the total so both compliant and violating
+    # cases, including close-margin ones, occur with real frequency.
+    margin_frac = rng.uniform(-0.35, 0.35)
+    threshold = round(total * (1.0 - margin_frac), 1)
+    threshold = max(threshold, 1.0)
+    sentences = [c.format(v=v, unit=domain["unit"]) for c, v in zip(chosen, values)]
+    rng.shuffle(sentences)
+    return domain, total, threshold, sentences
+
+
+def _numeric_render(rng: random.Random, domain: dict, threshold: float, sentences: List[str]) -> str:
+    thresh_sentence = domain["threshold_phrase"].format(cap_word=domain["cap_word"], t=threshold, unit=domain["unit"])
+    parts = sentences + [thresh_sentence]
+    rng.shuffle(parts)
+    text = f"For this {domain['item']}: " + "; ".join(parts) + "."
+    if rng.random() < 0.6:
+        detail = rng.choice(NEUTRAL_DETAILS)
+        text = f"{text} {detail}" if rng.random() < 0.5 else f"{detail} {text}"
+    return text
+
+
+def make_numeric_noul(rng: random.Random) -> dict:
+    domain, total, threshold, sentences = _numeric_scenario(rng)
+    margin = total - threshold
+    over = margin > 0
+    # Sharp but not one-hot: a record whose margin is tiny still carries a
+    # touch of real uncertainty about rounding/reading precision.
+    steep = 2.0
+    p_over = sigmoid(steep * margin / max(threshold, 1.0) * 5.0)
+    opts = [("over", "The total exceeds the stated limit."),
+            ("within", "The total is at or under the stated limit.")]
+    rng.shuffle(opts)
+    probs = {"over": p_over, "within": 1.0 - p_over}
+    target = [probs[i] for i, _ in opts]
+    return {
+        "state": _numeric_render(rng, domain, threshold, sentences),
+        "question": f"Does this {domain['item']}'s total exceed its {domain['cap_word']}?",
+        "options": [{"id": i, "description": d} for i, d in opts],
+        "label": "over" if over else "within",
+        "target": target,
+        "source": {"kind": "synth_numeric_noul"},
+        "_single": None,
+    }
+
+
+def make_numeric_choice(rng: random.Random) -> dict:
+    domain, total, threshold, sentences = _numeric_scenario(rng)
+    margin = total - threshold
+    frac = margin / max(threshold, 1.0)
+    if frac <= 0:
+        idx = 0
+    elif frac < 0.15:
+        idx = 1
+    else:
+        idx = 2
+    spread = 0.35
+    scores = [-((i - idx) ** 2) / (2 * spread ** 2) for i in range(3)]
+    mx = max(scores)
+    exps = [math.exp(s - mx) for s in scores]
+    tot = sum(exps)
+    target = [e / tot for e in exps]
+    opts = list(NUMERIC_VERDICT_OPTIONS)
+    order = list(range(len(opts)))
+    rng.shuffle(order)
+    opts = [opts[i] for i in order]
+    target = [target[i] for i in order]
+    return {
+        "state": _numeric_render(rng, domain, threshold, sentences),
+        "question": f"What is the compliance verdict for this {domain['item']}?",
+        "options": [{"id": i, "description": d} for i, d in opts],
+        "label": opts[max(range(len(target)), key=lambda k: target[k])][0],
+        "target": target,
+        "source": {"kind": "synth_numeric_choice"},
+        "_single": None,
+    }
+
+
 def generate(n: int, seed: int, dedupe: bool = True) -> List[dict]:
     """Generate n records, refusing to pad the corpus with repeats.
 
@@ -286,8 +421,8 @@ def generate(n: int, seed: int, dedupe: bool = True) -> List[dict]:
     times over.
     """
     rng = random.Random(seed)
-    makers = [make_noul, make_choice, make_score]
-    weights = [0.4, 0.4, 0.2]
+    makers = [make_noul, make_choice, make_score, make_numeric_noul, make_numeric_choice]
+    weights = [0.30, 0.30, 0.15, 0.15, 0.10]
     out: List[dict] = []
     seen = set()
     stalled = 0

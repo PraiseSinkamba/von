@@ -49,9 +49,11 @@ trap cleanup EXIT
 
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-# Cancel any lingering shutdown timer and set a rock-solid 240-minute watchdog
+# Cancel any lingering shutdown timer and set a hard watchdog. Sized from the
+# run's own epoch estimate (see launch()), not a fixed number: a 240-minute
+# ceiling killed a 2-epoch full-corpus run 23 minutes before it finished.
 shutdown -c 2>/dev/null || true
-shutdown -h +240 &
+shutdown -h +{watchdog_min} &
 
 echo "=== [VON UNIVERSAL DECISION TRAINING START] ==="
 export DEBIAN_FRONTEND=noninteractive
@@ -106,6 +108,7 @@ echo "Detected $NUM_GPUS GPUs. Starting PyTorch DDP training with 8,192 Context 
     {init_ckpt_flag} \\
     {independent_options_flag} \\
     --epochs {epochs} \\
+    --lr {lr} \\
     --batch_size 8 \\
     --grad_accum_steps 2 \\
     --max_position_embeddings 8192 \\
@@ -142,6 +145,8 @@ def launch(
     init_checkpoint_s3: str = "",
     independent_options: bool = False,
     base_model_id: str = "wfzyx/von",
+    lr: float = 3e-5,
+    watchdog_min: int = 0,
 ):
     market_str = "On-Demand (Guaranteed)" if on_demand else "Spot"
     print("================================================================")
@@ -153,6 +158,12 @@ def launch(
     print(f"  Synthetic rows:   {synthetic_n:,}")
     print(f"  Init checkpoint:  {init_checkpoint_s3 or '(none - fresh scoring head)'}")
     print(f"  Independent opts: {independent_options}")
+    print(f"  LR:               {lr}")
+    # Full-corpus epochs measured at ~110 min on 4x T4 with 8192-token rows; budget
+    # 130 min/epoch plus 40 min for corpus build + sync, unless overridden.
+    if watchdog_min <= 0:
+        watchdog_min = 40 + 130 * epochs
+    print(f"  Watchdog:         {watchdog_min} min")
     print("  Cluster Target:   4x GPU (g4dn.12xlarge / g5.12xlarge)")
     print("  Region:           us-west-2")
     print(f"  Target S3 Prefix: {s3_target}")
@@ -187,6 +198,8 @@ def launch(
             init_ckpt_flag=init_ckpt_flag,
             independent_options_flag="--independent_options" if independent_options else "",
             base_model_id=base_model_id,
+            lr=lr,
+            watchdog_min=watchdog_min,
         ))
 
     instance_id = None
@@ -267,6 +280,9 @@ if __name__ == "__main__":
                              "to continue training from instead of a fresh scoring head.")
     parser.add_argument("--independent-options", action="store_true",
                         help="train with the order-invariant independent-option attention mode")
+    parser.add_argument("--lr", type=float, default=3e-5)
+    parser.add_argument("--watchdog-min", type=int, default=0,
+                        help="hard shutdown ceiling in minutes (0 = derive from epochs)")
     args = parser.parse_args()
 
     launch(
@@ -280,4 +296,6 @@ if __name__ == "__main__":
         synthetic_n=args.synthetic_n,
         init_checkpoint_s3=args.init_checkpoint_s3,
         independent_options=args.independent_options,
+        lr=args.lr,
+        watchdog_min=args.watchdog_min,
     )

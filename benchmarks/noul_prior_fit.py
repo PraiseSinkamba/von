@@ -50,6 +50,7 @@ def cache_logits(dev_path: str, ckpt: str, out_path: str) -> None:
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
                 mask_positions=[pos_list],
+                independent_options=backend._independent_options,
             )[0]
         return logits.cpu().tolist()
 

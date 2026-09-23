@@ -80,6 +80,7 @@ def raw_logits(backend, case: dict, tokenizer):
             input_ids=enc["input_ids"].to(backend.device),
             attention_mask=enc["attention_mask"].to(backend.device),
             mask_positions=[positions],
+            independent_options=backend._independent_options,
         )
     return labels, [float(x) for x in out[0]]
 

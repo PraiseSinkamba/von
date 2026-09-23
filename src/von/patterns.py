@@ -2,7 +2,7 @@
 
 from typing import Any, Callable, Dict, List, Optional
 from .api import system_one
-from .types import Choice, Noul, Score
+from .types import Choice, Noul, NoulAnswer, Score
 
 
 def confidence_gate(
@@ -29,10 +29,11 @@ def confidence_gate(
     escalate = {}
 
     for q_id, ans in resp.answers.items():
-        conf = getattr(ans, "confidence", 1.0)
-        # For Noul (float probability), confidence is distance from uncertainty (0.5)
-        if isinstance(ans, float):
-            conf = abs(ans - 0.5) * 2.0
+        # Noul answers carry no confidence field; use distance from uncertainty (0.5).
+        if isinstance(ans, NoulAnswer):
+            conf = abs(ans.noul - 0.5) * 2.0
+        else:
+            conf = ans.confidence
 
         if conf >= threshold:
             automatic[q_id] = ans

@@ -101,6 +101,23 @@ def test_patterns_confidence_gate():
     assert len(gated["automatic"]) + len(gated["escalate"]) == 1
 
 
+def test_confidence_gate_routes_nouls_by_distance_from_half(monkeypatch):
+    from von import patterns
+    from von.types import NoulAnswer, SystemOneResponse, Usage
+
+    answers = {
+        "sure_yes": NoulAnswer(noul=0.95),
+        "sure_no": NoulAnswer(noul=0.05),
+        "unsure": NoulAnswer(noul=0.55),
+    }
+    fake = SystemOneResponse(model="fake", answers=answers, usage=Usage())
+    monkeypatch.setattr(patterns, "system_one", lambda state, questions: fake)
+
+    gated = confidence_gate("state", {}, threshold=0.8)
+    assert set(gated["automatic"]) == {"sure_yes", "sure_no"}
+    assert set(gated["escalate"]) == {"unsure"}
+
+
 def test_patterns_composite_score():
     state = "Catastrophic multi-region outage affecting all enterprise payments and databases."
     questions = {

@@ -30,7 +30,11 @@ import sys
 import time
 from typing import Dict, List, Optional, Tuple
 
-HARD = "/tmp/jevbench/datasets/public/hard.jsonl"
+TIER_FILES = {
+    "hard": "/tmp/jevbench/datasets/public/hard.jsonl",
+    "standard": "/tmp/jevbench/datasets/public/original.jsonl",
+    "easy": "/tmp/jevbench/datasets/public/easy.jsonl",
+}
 
 
 def load_rows(path: str) -> List[dict]:
@@ -182,9 +186,10 @@ def main() -> None:
     ap.add_argument("--threads", type=int, default=1)
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--dump", default="")
+    ap.add_argument("--tier", default="hard", choices=list(TIER_FILES))
     args = ap.parse_args()
 
-    rows = load_rows(HARD)
+    rows = load_rows(TIER_FILES[args.tier])
     if args.limit:
         rows = rows[:args.limit]
 

@@ -417,6 +417,7 @@ def train(
     long_ratio: float = 0.30,
     max_steps: int = 0,
     init_checkpoint: Optional[str] = None,
+    independent_options: bool = False,
 ):
     is_ddp = "RANK" in os.environ
     if is_ddp:
@@ -580,6 +581,7 @@ def train(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                     mask_positions=mask_positions,
+                    independent_options=independent_options,
                 )
                 loss, ce_loss, acc = compute_marker_rlcd_loss(
                     batch_logits, labels, brier_weight=brier_weight,
@@ -633,6 +635,7 @@ def train(
                                 "base_model": base_model_id,
                                 "init_checkpoint": init_checkpoint,
                                 "max_steps_reached": step + 1,
+                                "independent_options": independent_options,
                                 "validated": False,
                                 "timestamp": time.time(),
                             },
@@ -667,6 +670,7 @@ def train(
                             input_ids=input_ids,
                             attention_mask=attention_mask,
                             mask_positions=mask_positions,
+                            independent_options=independent_options,
                         )
                         loss, _, acc = compute_marker_rlcd_loss(
                             batch_logits, labels, brier_weight=brier_weight,
@@ -700,6 +704,7 @@ def train(
                             "base_model": base_model_id,
                             "best_val_accuracy": round(best_val_acc, 4),
                             "epoch": epoch,
+                            "independent_options": independent_options,
                             "timestamp": time.time(),
                         },
                     )
@@ -717,6 +722,7 @@ def train(
             "model_type": "option_marker",
             "base_model": base_model_id,
             "best_val_accuracy": round(best_val_acc, 4),
+            "independent_options": independent_options,
             "timestamp": time.time(),
         }
         _write_json(os.path.join(output_dir, "marker_calibration.json"), calib_config)
@@ -765,6 +771,11 @@ if __name__ == "__main__":
                         help="Path to an existing option_marker.pt (or its containing dir) "
                              "to continue training from, instead of a fresh randomly-"
                              "initialised scoring head.")
+    parser.add_argument("--independent_options", action="store_true",
+                        help="Train with an attention mask + position-id scheme that blocks "
+                             "option-to-option attention, making each option's logit a "
+                             "provably order-invariant function of (state, that option) alone. "
+                             "See build_independent_option_masks in src/von/models/option_marker.py.")
     args = parser.parse_args()
 
     train(
@@ -786,4 +797,5 @@ if __name__ == "__main__":
         long_ratio=args.long_ratio,
         max_steps=args.max_steps,
         init_checkpoint=args.init_checkpoint,
+        independent_options=args.independent_options,
     )

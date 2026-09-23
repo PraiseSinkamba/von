@@ -93,10 +93,11 @@ timeout {timeout_s} /opt/von/.venv/bin/torchrun --nproc_per_node=$NUM_GPUS train
     --val_data /opt/von/run_data/val.jsonl \\
     --base_model_id /opt/von/init_ckpt \\
     --init_checkpoint /opt/von/init_ckpt \\
-    --epochs 1 \\
+    --epochs {epochs} \\
     --batch_size 8 \\
     --grad_accum_steps 2 \\
     --lr {lr} \\
+    {independent_options_flag} \\
     --max_position_embeddings 8192 \\
     --max_steps {max_steps} \\
     --s3_target {s3_target} \\
@@ -126,6 +127,8 @@ def launch(
     init_ckpt_s3: str = "s3://model-weight/von-continue-init-ckpt",
     max_steps: int = 6000,
     lr: float = 1e-5,
+    epochs: int = 1,
+    independent_options: bool = False,
     timeout_s: int = 2100,
     on_demand: bool = True,
 ):
@@ -155,6 +158,8 @@ def launch(
             val_s3=val_s3,
             max_steps=max_steps,
             lr=lr,
+            epochs=epochs,
+            independent_options_flag="--independent_options" if independent_options else "",
             timeout_s=timeout_s,
         ))
 
@@ -220,6 +225,8 @@ if __name__ == "__main__":
     parser.add_argument("--s3-target", required=True)
     parser.add_argument("--max-steps", type=int, default=6000)
     parser.add_argument("--lr", type=float, default=1e-5)
+    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--independent-options", action="store_true")
     parser.add_argument("--timeout-s", type=int, default=2100)
     args = parser.parse_args()
 
@@ -230,5 +237,7 @@ if __name__ == "__main__":
         s3_target=args.s3_target,
         max_steps=args.max_steps,
         lr=args.lr,
+        epochs=args.epochs,
+        independent_options=args.independent_options,
         timeout_s=args.timeout_s,
     )

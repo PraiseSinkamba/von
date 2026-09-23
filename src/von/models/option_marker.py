@@ -34,6 +34,102 @@ class OptionMarkerScorer(nn.Module):
         return self.out_proj(h).squeeze(-1)
 
 
+def build_independent_option_masks(
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    mask_positions: List[List[int]],
+    position_ids: torch.Tensor,
+    sliding_window: Optional[int] = None,
+) -> dict:
+    """Builds attention masks that make each option's representation a function
+    of (prefix, that option) alone -- never of other options or their order.
+
+    Every packed sequence is [prefix tokens][MASK opt0][opt0 text][MASK opt1]...
+    A prefix token may attend to any prefix token. An option token may attend to
+    any prefix token or any token within its own option span, and nothing else --
+    in particular, never another option's tokens. This is provably order-invariant:
+    permuting which option occupies which slot cannot change any option's computed
+    logit, since its computation never depends on what else is in the sequence.
+
+    Applied to `full_attention` layers directly; ANDed with a sliding-window mask
+    for `sliding_attention` layers so long premises keep efficient local-context
+    behaviour. Crucially this local window is computed from the order-invariant
+    `position_ids` (see build_option_invariant_position_ids), NOT raw sequence
+    index -- ModernBERT's own sliding-window helper uses raw index distance,
+    which is NOT order-invariant here since an option's raw index shifts with
+    how many (attention-blocked) tokens of other options precede it.
+    """
+    B, seq_len = input_ids.shape
+    device = input_ids.device
+    # Index of the trailing [SEP]/EOS token (last real, non-pad position). It must
+    # not be absorbed into whichever option happens to land in the final slot --
+    # that would make the last slot special regardless of order.
+    last_content_idx = attention_mask.long().sum(dim=1) - 1  # (B,)
+    option_id = torch.full((B, seq_len), -1, dtype=torch.long, device=device)
+    for b, positions in enumerate(mask_positions):
+        for k, start in enumerate(positions):
+            end = positions[k + 1] if k + 1 < len(positions) else last_content_idx[b].item()
+            option_id[b, start:end] = k
+
+    oi = option_id.unsqueeze(2)  # query position's option id, (B, seq, 1)
+    oj = option_id.unsqueeze(1)  # key position's option id, (B, 1, seq)
+    query_is_prefix = oi == -1
+    key_is_prefix = oj == -1
+    same_option = oi == oj
+    allowed = (query_is_prefix & key_is_prefix) | (~query_is_prefix & (key_is_prefix | same_option))
+    pad_ok = attention_mask.bool().unsqueeze(1)
+    allowed = allowed & pad_ok
+    eye = torch.eye(seq_len, dtype=torch.bool, device=device).unsqueeze(0)
+    allowed = allowed | eye  # a fully-masked row would produce NaN in softmax
+    full_mask = allowed.unsqueeze(1)  # (B, 1, seq, seq)
+
+    if sliding_window is None:
+        sliding_mask = full_mask
+    else:
+        pi = position_ids.unsqueeze(2)  # (B, seq, 1)
+        pj = position_ids.unsqueeze(1)  # (B, 1, seq)
+        local = (pi - pj).abs() <= sliding_window
+        sliding_mask = (allowed & local).unsqueeze(1)
+        sliding_mask = sliding_mask | eye.unsqueeze(1)
+
+    return {"full_attention": full_mask, "sliding_attention": sliding_mask}
+
+
+def build_option_invariant_position_ids(
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    mask_positions: List[List[int]],
+) -> torch.Tensor:
+    """Resets every option's position_ids to start right after the prefix.
+
+    Blocking cross-option attention alone is NOT order-invariant under RoPE:
+    RoPE encodes *relative* distance, so an option's relative offset from the
+    prefix still shifts depending on how many (attention-blocked) tokens of
+    other options sit between it and the prefix in the packed sequence. This
+    makes every option start at the same position_ids offset (prefix length),
+    as if it were the only option present, so combined with
+    build_independent_option_masks its computation is a true function of
+    (prefix, that option) alone -- independent of packing order. The trailing
+    [SEP]/EOS token is excluded from the last option's span (same boundary fix
+    as build_independent_option_masks) so it isn't option-order-dependent either.
+    """
+    B, seq_len = input_ids.shape
+    device = input_ids.device
+    last_content_idx = attention_mask.long().sum(dim=1) - 1  # (B,)
+    position_ids = torch.arange(seq_len, device=device).unsqueeze(0).repeat(B, 1)
+    for b, positions in enumerate(mask_positions):
+        if not positions:
+            continue
+        prefix_len = positions[0]
+        for k, start in enumerate(positions):
+            end = positions[k + 1] if k + 1 < len(positions) else last_content_idx[b].item()
+            span_len = end - start
+            position_ids[b, start:end] = torch.arange(
+                prefix_len, prefix_len + span_len, device=device
+            )
+    return position_ids
+
+
 class OptionMarkerModel(nn.Module):
     """ModernBERT decision model with single-pass option-marker scoring."""
 
@@ -58,9 +154,27 @@ class OptionMarkerModel(nn.Module):
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
         mask_positions: List[List[int]],
+        independent_options: bool = False,
     ) -> List[torch.Tensor]:
-        """Runs single forward pass and returns list of option logits per sample."""
-        outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
+        """Runs single forward pass and returns list of option logits per sample.
+
+        independent_options=True swaps the default full-cross-attention mask for
+        one that makes each option's logit a function of (prefix, that option)
+        alone -- see build_independent_option_masks. Provably order-invariant by
+        construction, at the cost of removing option-to-option attention.
+        """
+        if independent_options:
+            position_ids = build_option_invariant_position_ids(input_ids, attention_mask, mask_positions)
+            sliding_window = getattr(self.encoder.config, "sliding_window", None)
+            enc_attention_mask = build_independent_option_masks(
+                input_ids, attention_mask, mask_positions,
+                position_ids, sliding_window,
+            )
+            outputs = self.encoder(
+                input_ids=input_ids, attention_mask=enc_attention_mask, position_ids=position_ids
+            )
+        else:
+            outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
         last_hidden = outputs.last_hidden_state  # (B, seq_len, H)
 
         batch_logits = []

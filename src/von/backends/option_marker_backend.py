@@ -136,6 +136,7 @@ class OptionMarkerBackend(BaseBackend):
         self._default_temp = 1.0
         self._calib_map: Optional[dict] = None
         self._noul_prior: Optional[dict] = None
+        self._independent_options = False
         self._lock = threading.Lock()
 
     def _effective_temperature(
@@ -230,14 +231,17 @@ class OptionMarkerBackend(BaseBackend):
                             self._default_temp = float(cdata.get("temperature", 1.0))
                             self._calib_map = _validate_calibration_map(cdata.get("calibration_map"))
                             self._noul_prior = _validate_noul_prior(cdata.get("noul_zero_shot_prior"))
+                            self._independent_options = bool(cdata.get("independent_options", False))
                     except Exception:
                         self._default_temp = 1.0
                         self._calib_map = None
                         self._noul_prior = None
+                        self._independent_options = False
                 else:
                     self._default_temp = 1.0
                     self._calib_map = None
                     self._noul_prior = None
+                    self._independent_options = False
 
                 if self._calib_map:
                     print(f"[von] Loaded {VON_MODEL_ID} weights from {loaded_from} "
@@ -281,6 +285,7 @@ class OptionMarkerBackend(BaseBackend):
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
                 mask_positions=[pos_list],
+                independent_options=self._independent_options,
             )
             logits = batch_logits[0]  # (K,)
             eff_temp = self._effective_temperature(
@@ -331,6 +336,7 @@ class OptionMarkerBackend(BaseBackend):
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
                 mask_positions=[pos_list],
+                independent_options=self._independent_options,
             )
             logits = batch_logits[0]
 
@@ -343,6 +349,7 @@ class OptionMarkerBackend(BaseBackend):
                     input_ids=null_inputs["input_ids"],
                     attention_mask=null_inputs["attention_mask"],
                     mask_positions=[null_pos],
+                    independent_options=self._independent_options,
                 )[0]
                 # Zero-shot debiasing. The context-free bias is positive on nearly
                 # every task the model has no criteria for (the model prefers "yes"
@@ -409,6 +416,7 @@ class OptionMarkerBackend(BaseBackend):
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
                 mask_positions=[pos_list],
+                independent_options=self._independent_options,
             )
             logits = batch_logits[0]
             eff_temp = self._effective_temperature(

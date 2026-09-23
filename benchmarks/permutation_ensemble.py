@@ -83,6 +83,7 @@ def run_order(backend, tokenizer, case, labels, descs, order):
             input_ids=enc["input_ids"].to(backend.device),
             attention_mask=enc["attention_mask"].to(backend.device),
             mask_positions=[positions],
+            independent_options=backend._independent_options,
         )[0]
     temp = backend._effective_temperature(logits, state, len(order), tokenizer)
     probs = torch.softmax(logits / max(temp, 1e-4), dim=-1).tolist()

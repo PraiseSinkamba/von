@@ -84,11 +84,16 @@ cd /opt/von
 export PYTHONPATH="/opt/von/src:$PYTHONPATH"
 
 # Build the Universal Decision Corpus, including the long-context core
-echo "=== Building {max_train}-sample Universal Decision Corpus (long_context={long_context}) ==="
+echo "=== Building {max_train}-sample Universal Decision Corpus (long_context={long_context}, synthetic={synthetic_n}) ==="
 /opt/von/.venv/bin/python -m training.prepare_universal_dataset \\
     --max_train {max_train} --val_samples 5000 \\
     --long_context {long_context} --overlap_target {overlap_target} \\
+    --synthetic_n {synthetic_n} \\
     --output_dir data_universal
+
+# Optional: continue from an existing full checkpoint (encoder + trained scoring
+# head) instead of a randomly-initialised head on the base encoder.
+{init_ckpt_block}
 
 # Detect GPUs and train with DDP
 NUM_GPUS=$(nvidia-smi -L | wc -l)
@@ -97,7 +102,9 @@ echo "Detected $NUM_GPUS GPUs. Starting PyTorch DDP training with 8,192 Context 
 /opt/von/.venv/bin/torchrun --nproc_per_node=$NUM_GPUS training/train_option_marker.py \\
     --train_data data_universal/train.jsonl \\
     --val_data data_universal/val.jsonl \\
-    --base_model_id wfzyx/von \\
+    --base_model_id {base_model_id} \\
+    {init_ckpt_flag} \\
+    {independent_options_flag} \\
     --epochs {epochs} \\
     --batch_size 8 \\
     --grad_accum_steps 2 \\
@@ -131,6 +138,10 @@ def launch(
     long_context: int = 40000,
     long_ratio: float = 0.30,
     overlap_target: float = 0.32,
+    synthetic_n: int = 0,
+    init_checkpoint_s3: str = "",
+    independent_options: bool = False,
+    base_model_id: str = "wfzyx/von",
 ):
     market_str = "On-Demand (Guaranteed)" if on_demand else "Spot"
     print("================================================================")
@@ -139,6 +150,9 @@ def launch(
     print(f"  Epochs:           {epochs}")
     print(f"  Long batch ratio: {long_ratio:.0%}")
     print(f"  Overlap target:   {overlap_target:.0%} gold-is-highest-overlap")
+    print(f"  Synthetic rows:   {synthetic_n:,}")
+    print(f"  Init checkpoint:  {init_checkpoint_s3 or '(none - fresh scoring head)'}")
+    print(f"  Independent opts: {independent_options}")
     print("  Cluster Target:   4x GPU (g4dn.12xlarge / g5.12xlarge)")
     print("  Region:           us-west-2")
     print(f"  Target S3 Prefix: {s3_target}")
@@ -148,6 +162,19 @@ def launch(
 
     user_data_path = "/tmp/user_data_universal.sh"
     with open(user_data_path, "w") as f:
+        if init_checkpoint_s3:
+            init_ckpt_block = (
+                "mkdir -p /opt/von/init_ckpt\n"
+                f"aws s3 sync {init_checkpoint_s3}/ /opt/von/init_ckpt/ --exclude 'run.log'\n"
+                "echo '=== init checkpoint downloaded ==='"
+            )
+            init_ckpt_flag = "--init_checkpoint /opt/von/init_ckpt"
+            # The init checkpoint dir also carries the encoder config the model
+            # needs, so point base_model_id there rather than at the Hub.
+            base_model_id = "/opt/von/init_ckpt"
+        else:
+            init_ckpt_block = "echo '=== no init checkpoint: fresh scoring head on base encoder ==='"
+            init_ckpt_flag = ""
         f.write(USER_DATA_TEMPLATE.format(
             epochs=epochs,
             s3_target=s3_target,
@@ -155,6 +182,11 @@ def launch(
             long_context=long_context,
             long_ratio=long_ratio,
             overlap_target=overlap_target,
+            synthetic_n=synthetic_n,
+            init_ckpt_block=init_ckpt_block,
+            init_ckpt_flag=init_ckpt_flag,
+            independent_options_flag="--independent_options" if independent_options else "",
+            base_model_id=base_model_id,
         ))
 
     instance_id = None
@@ -228,6 +260,13 @@ if __name__ == "__main__":
     parser.add_argument("--s3-target", type=str, default=S3_TARGET,
                         help="S3 prefix for checkpoints. Defaults to the SHIPPED weights "
                              "prefix, so point experiments somewhere else.")
+    parser.add_argument("--synthetic-n", type=int, default=0,
+                        help="rows of synthetic two-hop/numeric decisions to mix in (0 = off)")
+    parser.add_argument("--init-checkpoint-s3", type=str, default="",
+                        help="S3 prefix of an existing full checkpoint (option_marker.pt + config) "
+                             "to continue training from instead of a fresh scoring head.")
+    parser.add_argument("--independent-options", action="store_true",
+                        help="train with the order-invariant independent-option attention mode")
     args = parser.parse_args()
 
     launch(
@@ -238,4 +277,7 @@ if __name__ == "__main__":
         long_context=args.long_context,
         long_ratio=args.long_ratio,
         overlap_target=args.overlap_target,
+        synthetic_n=args.synthetic_n,
+        init_checkpoint_s3=args.init_checkpoint_s3,
+        independent_options=args.independent_options,
     )

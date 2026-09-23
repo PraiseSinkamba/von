@@ -90,6 +90,20 @@ def _validate_calibration_map(raw: object) -> Optional[Dict[str, float]]:
     return out
 
 
+def _validate_noul_prior(raw: object) -> Optional[Dict[str, float]]:
+    """Coerce a fitted zero-shot noul prior {"a": .., "b": ..} to floats, or None.
+
+    Absent or malformed always falls back to the original hardcoded 0.7*bias
+    correction in evaluate_noul, so a bad or missing entry never breaks inference.
+    """
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return {"a": float(raw["a"]), "b": float(raw["b"])}
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 class OptionMarkerBackend(BaseBackend):
     """Native System One decision backend powered by Option-Marker joint attention."""
 
@@ -121,6 +135,7 @@ class OptionMarkerBackend(BaseBackend):
         self._model = None
         self._default_temp = 1.0
         self._calib_map: Optional[dict] = None
+        self._noul_prior: Optional[dict] = None
         self._lock = threading.Lock()
 
     def _effective_temperature(
@@ -214,12 +229,15 @@ class OptionMarkerBackend(BaseBackend):
                             cdata = json.load(f)
                             self._default_temp = float(cdata.get("temperature", 1.0))
                             self._calib_map = _validate_calibration_map(cdata.get("calibration_map"))
+                            self._noul_prior = _validate_noul_prior(cdata.get("noul_zero_shot_prior"))
                     except Exception:
                         self._default_temp = 1.0
                         self._calib_map = None
+                        self._noul_prior = None
                 else:
                     self._default_temp = 1.0
                     self._calib_map = None
+                    self._noul_prior = None
 
                 if self._calib_map:
                     print(f"[von] Loaded {VON_MODEL_ID} weights from {loaded_from} "
@@ -326,9 +344,19 @@ class OptionMarkerBackend(BaseBackend):
                     attention_mask=null_inputs["attention_mask"],
                     mask_positions=[null_pos],
                 )[0]
-                # Conservative context-free debiasing
+                # Zero-shot debiasing. The context-free bias is positive on nearly
+                # every task the model has no criteria for (the model prefers "yes"
+                # with no state at all), so subtracting a coefficient times it pulls
+                # predictions toward "no". A fitted (a, b) replaces the original flat
+                # 0.7 coefficient when the checkpoint ships one (see
+                # benchmarks/noul_prior_fit.py); falls back to the original behaviour
+                # exactly when absent, so an unfitted checkpoint is unaffected.
                 bias = null_logits[0] - null_logits[1]
-                logits = torch.stack([logits[0] - 0.7 * bias, logits[1]])
+                if self._noul_prior is not None:
+                    correction = self._noul_prior["a"] * bias + self._noul_prior["b"]
+                else:
+                    correction = 0.7 * bias
+                logits = torch.stack([logits[0] - correction, logits[1]])
 
             eff_temp = self._effective_temperature(
                 logits, state_text, 2, tok, temperature

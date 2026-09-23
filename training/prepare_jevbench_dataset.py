@@ -51,9 +51,11 @@ TASKS: Dict[str, Optional[tuple]] = {
                        "The evidence does not support the claim."),
     "boolq": ("Yes, the passage supports an affirmative answer.",
               "No, the passage does not support an affirmative answer."),
-    "arc_challenge": None,   # choice: criteria come from the row
-    "mmlu": None,
-    "mnli": None,
+    # arc_challenge and mmlu deliberately excluded: both are scored benchmarks
+    # (arc_challenge is display-only, mmlu is a scored panel benchmark) on the
+    # Decision Index, drawn from the same public test splits jev-bench mirrors.
+    # mnli stays excluded: research-use-only licence (see harden_corpus notes),
+    # never actually intended to be live here despite being listed before.
 }
 
 TRUE_LABELS = {"1", "yes", "true", "entailment"}

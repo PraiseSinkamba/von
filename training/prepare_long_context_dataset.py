@@ -19,7 +19,7 @@ records whose premises are genuinely long and require cross-clause resolution.
 Two complementary sources
 -------------------------
 1. `harvest_legalbench()` - real contracts from nguha/legalbench
-   (contract_nli_*, maud_*, consumer_contracts_qa). These carry authentic legal
+   (maud_*, consumer_contracts_qa). These carry authentic legal
    "trap" knowledge that hand-written templates cannot invent, but only ~26% of
    rows exceed 512 tokens and essentially none reach 2048.
 
@@ -49,7 +49,11 @@ from typing import Dict, List, Optional
 # ---------------------------------------------------------------------------
 
 # Config prefixes whose `text` field is a contract excerpt rather than a sentence.
-LEGALBENCH_PREFIXES = ("contract_nli", "maud")
+# `contract_nli_*` deliberately excluded: it is drawn from the same
+# stanfordnlp/contract-nli test.json used verbatim as the Decision Index's
+# scored ContractNLI panel benchmark (123 cases, Language Understanding area).
+# Training on it would be training on a public leaderboard's held-out set.
+LEGALBENCH_PREFIXES = ("maud",)
 
 # legalbench multiple-choice tasks encode options as bare letters; without the
 # letter->meaning mapping the option markers carry no semantics for the scorer.
@@ -648,7 +652,8 @@ corpus supplies the missing examples.
 
 **Curated (`legalbench_*`)** - real contract text from
 [nguha/legalbench](https://huggingface.co/datasets/nguha/legalbench)
-(`contract_nli_*`, `maud_*`, `consumer_contracts_qa`), restricted to Yes/No tasks
+(`maud_*`, `consumer_contracts_qa`; `contract_nli_*` is excluded because it is the
+Decision Index's scored ContractNLI panel benchmark), restricted to Yes/No tasks
 where the option semantics are unambiguous. These carry authentic legal trap
 knowledge that templates cannot invent.
 

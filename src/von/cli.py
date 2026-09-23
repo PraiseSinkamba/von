@@ -35,7 +35,7 @@ def main():
     type=click.Choice(sorted(VON_CURRENT_ALIASES)),
     help=f"Von model version to load (Von {VON_VERSION} is the only model).",
 )
-@click.option("--device", default="auto", help="Compute device: 'auto', 'cuda', 'rocm', 'mps', 'dml', 'cpu'.")
+@click.option("--device", default="auto", help="Compute device: 'auto', 'cuda', 'rocm', 'mps', 'openvino', 'dml', 'cpu'.")
 @click.option("--reload", is_flag=True, default=False, help="Enable auto-reload.")
 def serve(host: str, port: int, backend: str, device: str, reload: bool):
     """Start the Von System One HTTP server."""
@@ -65,7 +65,7 @@ def serve(host: str, port: int, backend: str, device: str, reload: bool):
 @click.option(
     "--device",
     default="auto",
-    help="Compute device: 'auto', 'cuda', 'mps', 'cpu'.",
+    help="Compute device: 'auto', 'cuda', 'rocm', 'mps', 'openvino', 'dml', 'cpu'.",
 )
 def decide(text: str, choices: str, instructions: str, device: str):
     """Classify input text among discrete choices."""
@@ -110,7 +110,7 @@ def decide(text: str, choices: str, instructions: str, device: str):
 @click.option(
     "--device",
     default="auto",
-    help="Compute device: 'auto', 'cuda', 'mps', 'cpu'.",
+    help="Compute device: 'auto', 'cuda', 'rocm', 'mps', 'openvino', 'dml', 'cpu'.",
 )
 def judge(text: str, instructions: str, pos: str, neg: str, device: str):
     """Evaluate a yes/no judgment (Noul) and return the probability."""
@@ -152,7 +152,7 @@ def judge(text: str, instructions: str, pos: str, neg: str, device: str):
 @click.option(
     "--device",
     default="auto",
-    help="Compute device: 'auto', 'cuda', 'mps', 'cpu'.",
+    help="Compute device: 'auto', 'cuda', 'rocm', 'mps', 'openvino', 'dml', 'cpu'.",
 )
 def rate(text: str, levels: str, instructions: str, device: str):
     """Rate text on an ordered multi-level scale (Score)."""

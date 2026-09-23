@@ -19,7 +19,7 @@
   forward pass scoring six option descriptions against a text rendering of the depth buffer.
   No policy network, no fine-tuning, no reinforcement learning: the same shipped
   <code>von-1.1</code> weights that answer routing questions, wired to a game loop.
-  33 kills, 36 dodges, 80 seconds, on a single T4.</sub>
+  33 kills, 36 dodges, 80 seconds, on a GPU.</sub>
 </p>
 
 ---

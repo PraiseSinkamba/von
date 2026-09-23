@@ -29,7 +29,9 @@ von = "von.cli:main"
 dev = [
     "pytest>=9.0.0",
 ]
-
+intel = [
+    "openvino>=2025.0.0",
+]
 
 [build-system]
 requires = ["hatchling"]

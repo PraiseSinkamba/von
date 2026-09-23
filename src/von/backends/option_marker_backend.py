@@ -26,6 +26,7 @@ from ..types import (
     Usage,
 )
 from .base import BaseBackend
+from ..device import _detect_device, OpenVINODevice
 from ..models.option_marker import OptionMarkerModel
 
 
@@ -104,6 +105,72 @@ def _validate_noul_prior(raw: object) -> Optional[Dict[str, float]]:
         return None
 
 
+class OpenVINOEncoderWrapper(torch.nn.Module):
+    """Wraps an OpenVINO CompiledModel to replace PyTorch ModernBERT encoder."""
+
+    def __init__(self, compiled_model):
+        super().__init__()
+        self.compiled_model = compiled_model
+        self._local = threading.local()
+
+    def _get_infer_request(self):
+        if not hasattr(self._local, "req"):
+            self._local.req = self.compiled_model.create_infer_request()
+        return self._local.req
+
+    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor, **kwargs):
+        # The traced graph only knows a 2D padding mask and default position ids.
+        # Refuse the independent-options inputs rather than silently discarding
+        # them, which would void the order-invariance guarantee.
+        if isinstance(attention_mask, dict) or kwargs.get("position_ids") is not None:
+            raise RuntimeError(
+                "OpenVINO encoder cannot run independent_options mode (4D mask dict / "
+                "custom position_ids). Use the PyTorch encoder for this checkpoint."
+            )
+        req = self._get_infer_request()
+        res = req.infer({
+            "input_ids": input_ids.cpu().numpy(),
+            "attention_mask": attention_mask.cpu().numpy(),
+        })
+        last_hidden = torch.from_numpy(res[0])
+
+        class _Output:
+            pass
+
+        out = _Output()
+        out.last_hidden_state = last_hidden
+        return out
+
+
+def _compile_openvino_encoder(encoder: torch.nn.Module, target: str = "GPU") -> torch.nn.Module:
+    """Compiles PyTorch ModernBERT encoder to OpenVINO with disk caching."""
+    import openvino as ov
+
+    core = ov.Core()
+    cache_dir = os.path.expanduser("~/.cache/von/openvino_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    try:
+        core.set_property(target, {"CACHE_DIR": cache_dir})
+    except Exception:
+        pass
+
+    xml_path = os.path.join(cache_dir, f"encoder_{VON_MODEL_ID}.xml")
+    if os.path.exists(xml_path):
+        compiled_model = core.compile_model(xml_path, device_name=target)
+    else:
+        dummy_ids = torch.ones((1, 128), dtype=torch.long)
+        dummy_mask = torch.ones((1, 128), dtype=torch.long)
+        ov_model = ov.convert_model(
+            encoder,
+            example_input={"input_ids": dummy_ids, "attention_mask": dummy_mask},
+        )
+        ov.save_model(ov_model, xml_path)
+        compiled_model = core.compile_model(ov_model, device_name=target)
+
+    dev_name = core.get_property(target, "FULL_DEVICE_NAME") if target in core.available_devices else target
+    print(f"[von] Accelerated ModernBERT encoder on {dev_name} via OpenVINO")
+    return OpenVINOEncoderWrapper(compiled_model)
+
 class OptionMarkerBackend(BaseBackend):
     """Native System One decision backend powered by Option-Marker joint attention."""
 
@@ -127,11 +194,19 @@ class OptionMarkerBackend(BaseBackend):
                 self.DEFAULT_CHECKPOINT_DIRS[0],
             )
         self.checkpoint_dir = checkpoint_dir
-        self.device = torch.device(
-            device
-            if device
-            else ("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
+        self.raw_device = device
+        resolved = _detect_device(device)
+        self.resolved_device = resolved
+        self.is_openvino = (
+            isinstance(resolved, OpenVINODevice)
+            or (isinstance(device, str) and device.lower().strip() in ("openvino", "ov", "intel", "intel_gpu", "openvino:gpu", "ov:gpu"))
         )
+        if self.is_openvino:
+            self.device = torch.device("cpu")
+            self.openvino_target = getattr(resolved, "target", "GPU")
+        else:
+            self.device = resolved if isinstance(resolved, torch.device) else torch.device("cpu")
+            self.openvino_target = None
         self._model = None
         self._default_temp = 1.0
         self._calib_map: Optional[dict] = None
@@ -250,6 +325,25 @@ class OptionMarkerBackend(BaseBackend):
                     print(f"[von] Loaded {VON_MODEL_ID} weights from {loaded_from} (temperature {self._default_temp})")
                 else:
                     print(f"[von] Loaded {VON_MODEL_ID} weights from {loaded_from} (uncalibrated, T=1.0)")
+
+                # OpenVINO acceleration swaps the encoder for a graph traced with a
+                # plain 2D padding mask and default position ids. The order-invariant
+                # mode feeds a per-layer 4D mask dict plus custom position_ids, which
+                # that graph cannot accept; silently dropping them would void the
+                # invariance guarantee. Decide only after the calibration file has
+                # told us which mode this checkpoint needs.
+                if self.is_openvino:
+                    if self._independent_options:
+                        warnings.warn(
+                            "[von] OpenVINO acceleration is not yet supported for checkpoints "
+                            "trained in independent_options mode (needs a 4D mask + position_ids "
+                            "in the traced graph). Falling back to the PyTorch CPU encoder so the "
+                            "order-invariance guarantee is preserved.",
+                            UserWarning,
+                            stacklevel=2,
+                        )
+                    else:
+                        model.encoder = _compile_openvino_encoder(model.encoder, target=self.openvino_target)
 
                 self._model = model
             return self._model

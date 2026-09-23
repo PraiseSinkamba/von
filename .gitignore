@@ -16,3 +16,7 @@ js/node_modules/
 
 _vizdoom.ini
 data_long/
+
+# Personal working notes - never publish
+SOTA.md
+CONTEXT_EXPANSION.md

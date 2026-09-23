@@ -3,10 +3,24 @@
 **An Open-Source, Non-Autoregressive System One Decision Model.**  
 *Calibrated discrete, probabilistic, and ordinal inference in sub-25ms.*
 
-[![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-wfzyx%2Fvon--1.0-blue)](https://huggingface.co/wfzyx/von-1.0)
+[![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-wfzyx%2Fvon-blue)](https://huggingface.co/wfzyx/von)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue.svg)](https://www.typescriptlang.org/)
+
+---
+
+<p align="center">
+  <img src="assets/von-doom.gif" alt="Von choosing movement and combat actions in Doom, 29 seconds of unedited gameplay" width="640">
+</p>
+
+<p align="center">
+  <sub><b>Von playing Doom.</b> Every movement decision — advance, back off, sidestep a fireball — is one
+  forward pass scoring six option descriptions against a text rendering of the depth buffer.
+  No policy network, no fine-tuning, no reinforcement learning: the same shipped
+  <code>von-1.1</code> weights that answer routing questions, wired to a game loop.
+  33 kills, 36 dodges, 80 seconds, on a single T4.</sub>
+</p>
 
 ---
 

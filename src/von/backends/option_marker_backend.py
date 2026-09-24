@@ -324,6 +324,7 @@ class OptionMarkerBackend(BaseBackend):
                             self._calib_map = _validate_calibration_map(cdata.get("calibration_map"))
                             self._noul_prior = _validate_noul_prior(cdata.get("noul_zero_shot_prior"))
                             self._independent_options = bool(cdata.get("independent_options", False))
+                            model.digit_split = bool(cdata.get("digit_split", False))
                     except Exception:
                         self._default_temp = 1.0
                         self._calib_map = None

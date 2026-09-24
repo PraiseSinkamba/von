@@ -4,7 +4,7 @@ import os
 from typing import Any, Dict, Optional, Union
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .engine import VonEngine
 from .types import Question
@@ -35,6 +35,15 @@ class SystemOneRequest(BaseModel):
     model: str = Field(default="von-latest")
     state: Any = Field(..., description="State object, string, or array to evaluate")
     questions: Dict[str, Dict[str, Any]] = Field(..., description="Dict of question definitions")
+
+    @field_validator("questions")
+    @classmethod
+    def _at_least_one_question(cls, v: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        # OpenAPI declares minProperties: 1 -- an empty dict is a malformed
+        # request, not a valid no-op; TypeSafe's own API rejects it too.
+        if not v:
+            raise ValueError("questions must contain at least one entry")
+        return v
 
 
 @app.get("/")

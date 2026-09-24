@@ -6,6 +6,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 
+from . import __version__
 from .engine import VonEngine
 from .types import Question
 from .types import SystemOneResponse
@@ -13,7 +14,7 @@ from .types import SystemOneResponse
 app = FastAPI(
     title="Von Decision Server",
     description="Drop-in open source System One decision engine in homage to John von Neumann and Ludwig von Mises",
-    version="1.1.0",
+    version=__version__,
 )
 
 # Origins are configurable; default to open read access for a drop-in local
@@ -52,7 +53,7 @@ def health_check():
     return {
         "status": "ok",
         "service": "von-decision-server",
-        "version": "1.2.0",
+        "version": __version__,
         "engine": "von-1.2",
         "homage": "John von Neumann & Ludwig von Mises",
     }

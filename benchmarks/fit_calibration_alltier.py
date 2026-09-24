@@ -123,8 +123,12 @@ def main() -> None:
     for w in (1.0, 0.7, 0.5, 0.3):
         report(f"w_jev={w}", records, fit(records, w))
 
-    final = fit(records, args.w_jev, seed=3)
-    m = report(f"FINAL (w_jev={args.w_jev})", records, final)
+    # The random-search optimiser is seed-sensitive (same w_jev, several points
+    # apart between seeds), so take the best of several restarts by objective
+    # instead of trusting one draw.
+    candidates = [fit(records, args.w_jev, seed=s) for s in (0, 1, 2, 3, 4, 5, 6, 7)]
+    final = max(candidates, key=lambda p: objective(records, p, args.w_jev))
+    m = report(f"FINAL (w_jev={args.w_jev}, best of {len(candidates)} restarts)", records, final)
 
     # Split-half honesty check: fit on one half, score the untouched half.
     rng = random.Random(11)

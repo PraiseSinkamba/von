@@ -25,7 +25,7 @@ def _get_default_client() -> VonClient:
 def set_backend(backend: str):
     """Select the Von model version.
 
-    Von ships a single model, identified by version number ('von-1.1', or the
+    Von ships a single model, identified by version number ('von-1.2', or the
     'von'/'latest' aliases). Superseded releases and third-party encoders are
     reachable for benchmarking only and are not supported.
     """

@@ -28,10 +28,12 @@ from .types import (
 # never by architecture name -- so callers never have to know or care how the
 # current model is built. A model that changes enough to break parity gets the
 # next version number.
-VON_VERSION = "1.1"
+VON_VERSION = "1.2"
 
 # Aliases that resolve to the current model.
-VON_CURRENT_ALIASES = ("von-1.1", "1.1", "von", "default", "latest", "von-latest")
+# "von-1.1" stays accepted: 1.2 is the same model family retrained, and callers
+# that pinned the previous version should keep working rather than break on upgrade.
+VON_CURRENT_ALIASES = ("von-1.2", "1.2", "von-1.1", "1.1", "von", "default", "latest", "von-latest")
 SUPPORTED_BACKENDS = frozenset(VON_CURRENT_ALIASES)
 
 # Von ships exactly one model. Superseded releases and third-party encoders used
@@ -46,7 +48,7 @@ class VonEngine:
     _instance: Optional["VonEngine"] = None
     _lock: threading.Lock = threading.Lock()
 
-    def __init__(self, backend_name: str = "von-1.1", device: Optional[str] = None):
+    def __init__(self, backend_name: str = "von-1.2", device: Optional[str] = None):
         self.backend_name = backend_name.lower().strip()
         self.device = device or os.environ.get("VON_DEVICE")
         if self.backend_name in VON_CURRENT_ALIASES:

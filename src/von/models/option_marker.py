@@ -1,9 +1,16 @@
 """Option-Marker Joint Decision Model for ModernBERT.
 
 Enables single-pass non-autoregressive decision evaluation:
-Pack premise and K options into a single sequence marked by [MASK] tokens.
-All options attend to the state and each other simultaneously via full
-bidirectional self-attention, eliminating K separate cross-encoder passes.
+Pack premise and K options into a single sequence marked by [MASK] tokens and
+score every option in one encoder pass, eliminating K separate cross-encoder passes.
+
+Two attention modes:
+- default (von-1.1 and earlier): full bidirectional self-attention, so every option
+  also attends to every other option and its position depends on the packing order.
+- independent_options (von-1.2+): each option attends only to the premise and to
+  itself, with position ids reset to the prefix length, so its logit is a function
+  of (premise, that option) alone and the result is provably option-order invariant.
+  See build_independent_option_masks / build_option_invariant_position_ids.
 """
 
 from typing import List, Optional, Tuple

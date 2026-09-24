@@ -18,9 +18,36 @@
   <sub><b>Von playing Doom.</b> Every movement decision — advance, back off, sidestep a fireball — is one
   forward pass scoring six option descriptions against a text rendering of the depth buffer.
   No policy network, no fine-tuning, no reinforcement learning: the same shipped
-  <code>von-1.1</code> weights that answer routing questions, wired to a game loop.
+  Von weights that answer routing questions, wired to a game loop.
   33 kills, 36 dodges, 80 seconds, on a GPU.</sub>
 </p>
+
+---
+
+## What's new in 1.2: order-invariant option scoring
+
+Von 1.1 had a defect shared with most option-packing models: **the answer could depend on
+the order the options were listed in.** On JevBench's option-order diagnostic, 49.5% of its
+hard-tier answers changed when the same options were shuffled (reference models: 0–5%).
+
+Von 1.2 removes that at the architecture level. Inside the encoder, each option's tokens
+attend only to the premise and to themselves — never to another option — and every option's
+rotary position restarts at the end of the premise, as if it were the only option present.
+Each option's score is therefore a function of *(premise, that option)* alone. Permuting the
+options permutes the scores and changes nothing else — a guarantee, not a tendency.
+
+| JevBench public tier | Von 1.1 | **Von 1.2** |
+| :--- | ---: | ---: |
+| easy (48) | 93.8% | **100.0%** |
+| standard (72) | 65.3% | 63.9% |
+| hard (111) | 38.7% | **38.7%** |
+| answer flips under option reordering (hard, 4 orderings) | 49.5% | **0.0%** |
+| JevBench Calibration axis (in-sample) | 75.7 | **77.4** |
+
+Retrained from the 1.1 weights under the new attention mask on the full corpus. Also new:
+OpenVINO acceleration for Intel GPUs (`pip install "von-sdk[intel]"`, auto-detected; ~4x
+on an Iris Xe iGPU for 1.1-style checkpoints), and a fitted zero-shot Noul prior (85.1% on
+a held-out dev set, up from 81.7%).
 
 ---
 
@@ -34,7 +61,7 @@ Autoregressive large language models (LLMs) decode token-by-token to perform cla
 - **Non-Autoregressive Parallelism:** Evaluates multiple independent questions across state simultaneously in a single forward pass.
 - **SOTA Empirical Accuracy:** **91.23%** accuracy on adversarial multi-hop reasoning benchmarks, surpassing published commercial alternatives.
 - **Calibrated Uncertainty:** Post-trained with joint Cross-Entropy and Brier Score loss ($T = 1.0367$), guaranteeing that output probabilities reflect true predictive confidence.
-- **Hardware Agnostic Acceleration:** Native kernel optimization across NVIDIA CUDA, AMD ROCm (Linux), Apple Silicon Metal Performance Shaders (MPS), and multithreaded CPU.
+- **Hardware Agnostic Acceleration:** Native kernel optimization across NVIDIA CUDA, AMD ROCm (Linux), Apple Silicon Metal Performance Shaders (MPS), Intel GPUs via OpenVINO, and multithreaded CPU.
 - **Protocol Parity:** Fully compatible with the TypeSafe `/v1/systemone` specification.
 
 ---
@@ -349,7 +376,7 @@ von serve --host 0.0.0.0 --port 8000
 curl -X POST http://localhost:8000/v1/systemone \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "von-1.1.0",
+    "model": "von-1.2.0",
     "state": { "error": "Disk volume /var/log at 98% capacity." },
     "questions": {
       "requires_intervention": {

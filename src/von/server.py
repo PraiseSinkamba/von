@@ -43,8 +43,8 @@ def health_check():
     return {
         "status": "ok",
         "service": "von-decision-server",
-        "version": "1.1.0",
-        "engine": "von-1.1",
+        "version": "1.2.0",
+        "engine": "von-1.2",
         "homage": "John von Neumann & Ludwig von Mises",
     }
 
@@ -52,8 +52,9 @@ def health_check():
 @app.get("/v1/models")
 def list_models():
     model_entries = [
-        {"name": "von-latest", "description": "Current Von System One decision model", "release_date": "2026-09-21"},
-        {"name": "von-1.1.0", "description": "Von 1.1 stable release", "release_date": "2026-09-21"},
+        {"name": "von-latest", "description": "Current Von System One decision model", "release_date": "2026-09-23"},
+        {"name": "von-1.2.0", "description": "Von 1.2 stable release (order-invariant option scoring)", "release_date": "2026-09-23"},
+        {"name": "von-1.1.0", "description": "Von 1.1 alias (resolves to current model)", "release_date": "2026-09-21"},
         {"name": "jev-latest", "description": "TypeSafe Jev compatibility alias", "release_date": "2026-09-21"},
     ]
     data_entries = [

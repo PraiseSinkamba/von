@@ -49,7 +49,7 @@ def _format_state(state: Any) -> str:
 # id, so pinned installs keep resolving.
 VON_HF_REPO = "wfzyx/von"
 
-VON_MODEL_ID = "von-1.1.0"
+VON_MODEL_ID = "von-1.2.0"
 
 
 
@@ -178,6 +178,7 @@ class OptionMarkerBackend(BaseBackend):
     # default pointing at a directory that does not exist silently degrades to a
     # Hub download, which is how a stale cache surfaced as a load failure.
     DEFAULT_CHECKPOINT_DIRS = (
+        "checkpoints/von-1.2",
         "checkpoints/von-option-marker-universal",
         "checkpoints/von-option-marker",
     )

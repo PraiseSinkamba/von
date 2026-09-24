@@ -30,10 +30,11 @@ import sys
 import time
 from typing import Dict, List, Optional, Tuple
 
+_JEVBENCH_PUBLIC = os.environ.get("JEVBENCH_PUBLIC", "/tmp/scratch/jevbench/datasets/public")
 TIER_FILES = {
-    "hard": "/tmp/jevbench/datasets/public/hard.jsonl",
-    "standard": "/tmp/jevbench/datasets/public/original.jsonl",
-    "easy": "/tmp/jevbench/datasets/public/easy.jsonl",
+    "hard": os.path.join(_JEVBENCH_PUBLIC, "hard.jsonl"),
+    "standard": os.path.join(_JEVBENCH_PUBLIC, "original.jsonl"),
+    "easy": os.path.join(_JEVBENCH_PUBLIC, "easy.jsonl"),
 }
 
 

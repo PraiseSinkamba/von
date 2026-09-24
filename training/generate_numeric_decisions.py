@@ -380,6 +380,139 @@ def make_duration(params: dict, rng: random.Random) -> dict:
     }
 
 
+# ------------------------------------------------------------ choice sets --
+# Value-ranking variants. Why these exist: the Noul pairs above teach
+# "is this verdict plausible" at a 0.5 threshold. JevBench's temporal_numeric
+# items instead put the *naive computation's value* in the option set as a
+# decoy (`provenance.surface_answer`), and Von picks that decoy 59-75% of the
+# time it is wrong -- 1.5-1.9x what uniform-over-wrong-options predicts, on
+# both von-1.2 and the Noul-only continue-train. The trainer already applies
+# softmax-CE across an item's options; what was missing is data where gold
+# and its own near-miss sit in one option set with identical wording. Every
+# choice item below carries the surface value as a mandatory sibling.
+
+CHOICE_IDS = ["a", "b", "c", "d", "e", "f"]
+
+
+def value_options(rng: random.Random, gold: str, decoys: List[str]) -> tuple:
+    """Shuffle gold + unique decoys into id'd options; return (options, gold_id)."""
+    vals = [gold]
+    for d in decoys:
+        if d != gold and d not in vals:
+            vals.append(d)
+    rng.shuffle(vals)
+    opts = [{"id": CHOICE_IDS[i], "description": v} for i, v in enumerate(vals)]
+    gold_id = opts[vals.index(gold)]["id"]
+    return opts, gold_id
+
+
+def _fmt_dt(d: datetime) -> str:
+    return d.strftime("%d %b %Y %H:%M")
+
+
+def make_deadline_tz_choice(params: dict, rng: random.Random) -> dict:
+    dl, d_off, e_off = params["deadline_local"], params["d_off"], params["e_off"]
+    gold_dt = dl - timedelta(hours=d_off[0]) + timedelta(hours=e_off[0])
+    surface = dl                                                   # no conversion
+    wrong_sign = dl + timedelta(hours=d_off[0]) - timedelta(hours=e_off[0])
+    decoys = [_fmt_dt(surface), _fmt_dt(wrong_sign),
+              _fmt_dt(gold_dt + timedelta(hours=rng.choice([-1, 1]))),
+              _fmt_dt(gold_dt + timedelta(minutes=rng.choice([-30, 30])))]
+    opts, gold_id = value_options(rng, _fmt_dt(gold_dt), decoys)
+    state = maybe_filler(rng,
+        f"Deadline: {_fmt_dt(dl)} {d_off[1]} (UTC{fmt_offset(d_off[0])}). "
+        f"The submitter is located in {e_off[1]} (UTC{fmt_offset(e_off[0])}).")
+    return {"state": state,
+            "question": f"Expressed in the submitter's local time ({e_off[1]}), when is the deadline?",
+            "options": opts, "label": gold_id,
+            "source": {"kind": "synth_numeric_deadline_tz_choice", "surface": _fmt_dt(surface)}}
+
+
+def make_month_end_leap_choice(params: dict, rng: random.Random) -> dict:
+    start, months, cutoff = params["start"], params["months"], params["cutoff"]
+    # naive: same day-of-month, overflowing past month-end (what a shallow read does)
+    m0 = start.month - 1 + months
+    y, m = start.year + m0 // 12, m0 % 12 + 1
+    overflow = start.day - calendar.monthrange(y, m)[1]
+    surface = cutoff + timedelta(days=overflow) if overflow > 0 else cutoff - timedelta(days=1)
+    feb_swap = cutoff.replace(day=28) if cutoff.month == 2 and cutoff.day == 29 else cutoff + timedelta(days=1)
+    decoys = [fmt_date(surface), fmt_date(feb_swap), fmt_date(cutoff - timedelta(days=1)),
+              fmt_date(_add_months_clamped(start, months + rng.choice([-1, 1])))]
+    opts, gold_id = value_options(rng, fmt_date(cutoff), decoys)
+    state = maybe_filler(rng,
+        f"Reference date: {fmt_date(start)}. Policy window: {months} months from the "
+        f"reference date, extending to the last day of the ending month if that day "
+        f"does not exist in the target month.")
+    return {"state": state, "question": "On what date does the policy window end?",
+            "options": opts, "label": gold_id,
+            "source": {"kind": "synth_numeric_month_end_leap_choice", "surface": fmt_date(surface)}}
+
+
+def make_proration_choice(params: dict, rng: random.Random) -> dict:
+    total, period, elapsed, cap = params["total"], params["period_days"], params["elapsed"], params["cap_pct"]
+    allowed = params["allowed"]
+    uncapped = round(total * (period - elapsed) / period, 2)
+    cap_only = round(total * cap / 100.0, 2)
+    surface = uncapped if abs(uncapped - allowed) > 0.005 else cap_only
+    inverse = round(total * elapsed / period, 2)
+    decoys = [f"${surface:.2f}", f"${cap_only:.2f}", f"${inverse:.2f}", f"${total:.2f}"]
+    opts, gold_id = value_options(rng, f"${allowed:.2f}", decoys)
+    state = maybe_filler(rng,
+        f"{params['domain'].capitalize()} total paid: ${total:.2f}. Billing period: {period} days; "
+        f"days elapsed before cancellation: {elapsed}. Policy caps any prorated "
+        f"{params['kind']} at {cap}% of the total paid.")
+    return {"state": state,
+            "question": f"What is the maximum {params['kind']} the policy allows?",
+            "options": opts, "label": gold_id,
+            "source": {"kind": "synth_numeric_proration_choice", "surface": f"${surface:.2f}"}}
+
+
+def make_cumulative_choice(params: dict, rng: random.Random) -> dict:
+    domain, values, total = params["domain"], params["values"], params["total"]
+    unit = domain["unit"]
+    partial = round(sum(values[:-1]), 1) if len(values) > 2 else round(max(values), 1)
+    surface = round(max(values), 1)                                # biggest single line
+    decoys = [f"{surface} {unit}", f"{partial} {unit}", f"{params['threshold']} {unit}",
+              f"{round(total + rng.choice([-1, 1]) * rng.uniform(0.5, 4.0), 1)} {unit}"]
+    opts, gold_id = value_options(rng, f"{total} {unit}", decoys)
+    sentences = [c.format(v=v, unit=unit) for c, v in zip(params["chosen"], values)]
+    sentences.append(domain["decoy"].format(decoy=params["decoy"], unit=unit))
+    sentences.append(f"the {domain['cap']} is {params['threshold']} {unit}")
+    rng.shuffle(sentences)
+    state = maybe_filler(rng, f"For this {domain['item']}: " + "; ".join(sentences) + ".")
+    return {"state": state, "question": f"What is the total {domain['item']} figure?",
+            "options": opts, "label": gold_id,
+            "source": {"kind": "synth_numeric_cumulative_choice", "surface": f"{surface} {unit}"}}
+
+
+def make_duration_choice(params: dict, rng: random.Random) -> dict:
+    a, b, delta = params["date_a"], params["date_b"], params["delta_days"]
+    # naive: day-of-month difference, or whole-months x 30
+    naive_dom = abs(b.day - a.day)
+    naive_m30 = ((b.year - a.year) * 12 + (b.month - a.month)) * 30
+    surface = naive_dom if naive_dom != delta else naive_m30
+    decoys = [f"{surface} days", f"{naive_m30} days", f"{delta + rng.choice([-1, 1])} days",
+              f"{params['threshold']} days"]
+    opts, gold_id = value_options(rng, f"{delta} days", decoys)
+    state = maybe_filler(rng,
+        f"{params['a_name'].capitalize()} date: {fmt_date(a)}. "
+        f"{params['b_name'].capitalize()} {params['verb']}: {fmt_date(b)}. "
+        f"Policy requires the {params['b_name']} within {params['threshold']} days of the {params['a_name']}.")
+    return {"state": state,
+            "question": f"How many days elapsed between the {params['a_name']} and the {params['b_name']}?",
+            "options": opts, "label": gold_id,
+            "source": {"kind": "synth_numeric_duration_choice", "surface": f"{surface} days"}}
+
+
+CHOICE_MAKERS = {
+    "deadline_tz": make_deadline_tz_choice,
+    "month_end_leap": make_month_end_leap_choice,
+    "proration_percent": make_proration_choice,
+    "cumulative_vs_limit": make_cumulative_choice,
+    "date_order_duration": make_duration_choice,
+}
+
+
 # --------------------------------------------------------------------- gen -
 
 FAMILIES = [
@@ -391,38 +524,51 @@ FAMILIES = [
 ]
 
 
-def generate(n: int, seed: int, dedupe: bool = True) -> List[dict]:
-    """Generate n records (pairs count as 2), split evenly across 5 families."""
+def generate(n: int, seed: int, dedupe: bool = True, choice_ratio: float = 0.0) -> List[dict]:
+    """Generate n records split evenly across 5 families.
+
+    `choice_ratio` is the fraction of each family's budget emitted as value-
+    ranking choice sets (gold + surface decoy + near-miss siblings); the rest
+    are the original true/false twin pairs. Choice sets are also emitted as
+    base+twin, so the same wording appears with the gold at a different value.
+    """
     rng = random.Random(seed)
     out: List[dict] = []
     seen = set()
     per_family = max(2, n // len(FAMILIES) // 2 * 2)  # keep pairs together, even count
-    for family, draw, twin, render in FAMILIES:
-        made = 0
-        stalled = 0
-        while made < per_family and stalled < 20000:
+    n_choice = int(per_family * choice_ratio) // 2 * 2
+    n_noul = per_family - n_choice
+
+    def _emit_pairs(family: str, budget: int, render, require_flip: bool) -> int:
+        _, draw, twin, _ = next(f for f in FAMILIES if f[0] == family)
+        made = stalled = 0
+        while made < budget and stalled < 20000:
             params = draw(rng)
             base = render(params, rng)
-            tw_params = twin(params, rng)
-            tw = render(tw_params, rng)
-            if tw["label"] == base["label"]:
+            tw = render(twin(params, rng), rng)
+            if require_flip and tw["label"] == base["label"]:
                 stalled += 1
-                continue  # twin construction failed to flip the gold; retry
+                continue
             key_b, key_t = (base["state"], base["question"]), (tw["state"], tw["question"])
-            if dedupe and (key_b in seen or key_t in seen):
+            if dedupe and (key_b in seen or key_t in seen or key_b == key_t):
                 stalled += 1
                 continue
             seen.add(key_b)
             seen.add(key_t)
-            base["family"] = family
-            tw["family"] = family
-            out.append(base)
-            out.append(tw)
+            base["family"] = tw["family"] = family
+            out.extend((base, tw))
             made += 2
             stalled = 0
-        if made < per_family:
-            print(f"NOTE: {family} generated {made:,} of {per_family:,} requested; "
-                  f"combinatorics exhausted or dedupe pressure too high.")
+        return made
+
+    for family, _, _, render in FAMILIES:
+        made = _emit_pairs(family, n_noul, render, require_flip=True)
+        if made < n_noul:
+            print(f"NOTE: {family} noul generated {made:,} of {n_noul:,} requested.")
+        if n_choice:
+            made = _emit_pairs(family, n_choice, CHOICE_MAKERS[family], require_flip=False)
+            if made < n_choice:
+                print(f"NOTE: {family} choice generated {made:,} of {n_choice:,} requested.")
     rng.shuffle(out)
     return out
 
@@ -465,9 +611,12 @@ def main() -> None:
     ap.add_argument("--out", default="data_numeric/numeric.jsonl")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--audit", action="store_true")
+    ap.add_argument("--choice-ratio", type=float, default=0.0,
+                    help="fraction of each family emitted as value-ranking choice sets "
+                         "(gold + surface decoy + near-miss siblings) instead of true/false pairs")
     args = ap.parse_args()
 
-    records = generate(args.n, args.seed)
+    records = generate(args.n, args.seed, choice_ratio=args.choice_ratio)
     write_jsonl(records, args.out)
     print(f"Wrote {len(records):,} records to {args.out}")
     if args.audit:

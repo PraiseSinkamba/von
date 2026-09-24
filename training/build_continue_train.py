@@ -48,6 +48,39 @@ def split_val(records: List[dict], frac: float, rng: random.Random) -> tuple:
     return records[n_val:], records[:n_val]
 
 
+def _lc(s: str) -> str:
+    return s[0].lower() + s[1:] if s else s
+
+
+def neg_wrap_augment(records: List[dict], frac: float, rng: random.Random) -> List[dict]:
+    """Rewrite a share of noul-shaped (true/false) records' rubric as a
+    negation of each other, gold unchanged.
+
+    Targets `probe_noul_negation.py`'s finding: 24% of Von's noul decisions
+    flip under this exact meaning-preserving rewrite, with a 22pp yes-bias
+    on top. Every generator in this pool already ships label-balanced
+    true/false pairs (the boolq-style source that caused the measured bias
+    is not in this corpus), so this augmentation targets rubric-wording
+    robustness specifically, not label balance.
+    """
+    out = []
+    n_wrapped = 0
+    for r in records:
+        ids = {o["id"] for o in r.get("options", [])}
+        if ids == {"true", "false"} and rng.random() < frac:
+            crit = {o["id"]: o["description"] for o in r["options"]}
+            r = dict(r)
+            r["options"] = [
+                {"id": "true", "description": "It is not the case that " + _lc(crit["false"])},
+                {"id": "false", "description": "It is not the case that " + _lc(crit["true"])},
+            ]
+            r["neg_wrapped"] = True
+            n_wrapped += 1
+        out.append(r)
+    print(f"neg_wrap_augment: {n_wrapped:,}/{len(records):,} noul records rewritten "
+          f"({n_wrapped / max(1, len(records)):.1%})")
+    return out
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--numeric", default="data_numeric/numeric.jsonl")
@@ -56,6 +89,7 @@ def main() -> None:
     ap.add_argument("--val-frac", type=float, default=0.05)
     ap.add_argument("--out-dir", default="data_continue")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--neg-wrap-frac", type=float, default=0.2)
     args = ap.parse_args()
 
     rng = random.Random(args.seed)
@@ -79,6 +113,7 @@ def main() -> None:
         val.extend(v)
         print(f"  {name}: {len(t):,} train / {len(v):,} val")
 
+    train = neg_wrap_augment(train, args.neg_wrap_frac, rng)
     rng.shuffle(train)
     rng.shuffle(val)
 

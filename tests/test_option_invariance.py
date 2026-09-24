@@ -8,6 +8,7 @@ build_option_invariant_position_ids for the design rationale.
 """
 
 import itertools
+import os
 
 import pytest
 import torch
@@ -16,6 +17,16 @@ from von.models.option_marker import OptionMarkerModel
 
 CHECKPOINT = "checkpoints/von-option-marker-universal"
 
+# This checks the encoder's own mask/position-id construction against a real
+# checkpoint's config (max_position_embeddings, sliding_window, etc.), so it
+# needs local weights rather than the base_model_id's hub-download fallback
+# used elsewhere (that would fetch published weights of unknown attention
+# mode). checkpoints/ is gitignored and absent in CI -- skip cleanly there
+# instead of turning a missing local checkpoint into a false CI failure.
+pytestmark = pytest.mark.skipif(
+    not os.path.exists(CHECKPOINT),
+    reason=f"local checkpoint {CHECKPOINT!r} not present (gitignored; not fetched in CI)",
+)
 
 @pytest.fixture(scope="module")
 def model():

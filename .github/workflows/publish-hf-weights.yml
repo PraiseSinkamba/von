@@ -1,7 +1,20 @@
 name: Publish Option-Marker Weights to Hugging Face
 
+# Publishes a release checkpoint from S3 to the wfzyx/von Hub repo. The S3 prefix
+# is the single source of truth for a release: it must contain option_marker.pt,
+# model.safetensors, config.json, tokenizer.json, tokenizer_config.json and the
+# fitted marker_calibration.json (which also tells the SDK which attention mode
+# the weights need, e.g. independent_options for 1.2+).
+#
+# Dispatch manually with the prefix, or touch .trigger-hf-release for the default.
+
 on:
   workflow_dispatch:
+    inputs:
+      s3_prefix:
+        description: "S3 prefix holding the release checkpoint"
+        required: true
+        default: "s3://model-weight/von-1.2"
   push:
     paths:
       - '.trigger-hf-release'
@@ -9,6 +22,8 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    env:
+      S3_PREFIX: ${{ github.event.inputs.s3_prefix || 's3://model-weight/von-1.2' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -25,37 +40,42 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-west-2
 
-      - name: Download latest converged checkpoint from S3
+      - name: Download release checkpoint from S3
         run: |
+          set -euo pipefail
           mkdir -p /tmp/release_weights
-          aws s3 cp s3://model-weight/von-option-marker-universal/option_marker.pt /tmp/release_weights/option_marker.pt
-          aws s3 cp s3://model-weight/von-option-marker-universal/marker_calibration.json /tmp/release_weights/marker_calibration.json
+          for f in option_marker.pt model.safetensors config.json tokenizer.json tokenizer_config.json marker_calibration.json; do
+            aws s3 cp "$S3_PREFIX/$f" "/tmp/release_weights/$f"
+          done
+          ls -la /tmp/release_weights
+          python3 -c "import json; d=json.load(open('/tmp/release_weights/marker_calibration.json')); print('model_id:', d.get('model_id')); print('independent_options:', d.get('independent_options', False)); assert 'calibration_map' in d, 'refusing to publish an uncalibrated checkpoint'"
 
       - name: Upload to Hugging Face Hub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           uv run --with huggingface_hub python - << 'EOF'
-          import os
+          import json, os
           from huggingface_hub import HfApi
 
           token = os.environ.get("HF_TOKEN")
+          if not token:
+              raise RuntimeError("Missing HF_TOKEN secret!")
           api = HfApi(token=token)
+          repo_id = "wfzyx/von"
 
-          print("Publishing option_marker.pt (~1.5GB) to wfzyx/von...")
-          api.upload_file(
-              path_or_fileobj="/tmp/release_weights/option_marker.pt",
-              path_in_repo="option_marker.pt",
-              repo_id="wfzyx/von",
-              commit_message="feat(model): release converged Option-Marker Universal weights (98.66% val, 72.0% v2 macro, 9.00 ViZDoom kills)"
-          )
+          calib = json.load(open("/tmp/release_weights/marker_calibration.json"))
+          model_id = calib.get("model_id", "von")
+          mode = "independent_options" if calib.get("independent_options") else "full cross-attention"
 
-          print("Publishing marker_calibration.json to wfzyx/von...")
-          api.upload_file(
-              path_or_fileobj="/tmp/release_weights/marker_calibration.json",
-              path_in_repo="marker_calibration.json",
-              repo_id="wfzyx/von",
-              commit_message="feat(model): update marker_calibration.json to converged Epoch 3 checkpoint"
+          # One commit for the whole checkpoint so the Hub is never in a state where
+          # new weights sit next to an old calibration file (or vice versa).
+          print(f"Publishing {model_id} ({mode}) from {os.environ['S3_PREFIX']} to {repo_id}...")
+          api.upload_folder(
+              folder_path="/tmp/release_weights",
+              repo_id=repo_id,
+              repo_type="model",
+              commit_message=f"release: {model_id} weights + calibration ({mode})",
           )
-          print("Successfully published converged Option-Marker weights to Hugging Face Hub!")
+          print("Published.")
           EOF

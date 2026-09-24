@@ -94,7 +94,8 @@ def _score(job: dict) -> dict:
         if qtype == "noul":
             pick = "true" if getattr(ans, "noul") >= 0.5 else "false"
         elif qtype == "score":
-            pick = str(int(round(float(getattr(ans, "score")))))
+            probs = getattr(ans, "probabilities")
+            pick = max(probs, key=probs.get)  # argmax, as the official harness reads it
         else:
             pick = str(getattr(ans, "choice"))
     except Exception as exc:  # noqa: BLE001

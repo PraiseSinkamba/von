@@ -190,7 +190,10 @@ def _score(job: Tuple[str, dict]) -> dict:
             pick = "true" if p >= 0.5 else "false"
             conf = abs(p - 0.5) * 2
         elif qtype == "score":
-            pick = str(int(round(float(getattr(ans, "score")))))
+            # Official harness: argmax over the returned distribution. round(E[level])
+            # regresses every 0-3 answer to 1 or 2 (ordinal 3/12 vs argmax 9/12).
+            probs = getattr(ans, "probabilities")
+            pick = max(probs, key=probs.get)
             conf = float(getattr(ans, "confidence"))
         else:
             pick, conf = str(getattr(ans, "choice")), float(getattr(ans, "confidence"))
